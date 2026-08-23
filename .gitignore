@@ -47,7 +47,7 @@ external/src/
 .aider*
 
 # Student sandbox workspace
-workspace/
+# workspace/
 
 # Local telemetry / jsonl logs
 *.jsonl
