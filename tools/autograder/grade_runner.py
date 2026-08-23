@@ -208,7 +208,7 @@ def main():
             return
 
     # 4. Compilation if Simulink track
-    client_bin = "/tmp/simulink_client"
+    client_bin = "simulink_client.exe"
     if track == "simulink":
         print("[Grader] Compiling Simulink deployment code...")
         
@@ -307,7 +307,7 @@ def main():
             except Exception:
                 pass
                 
-        sim_log_path = "/tmp/simulator_backend.log"
+        sim_log_path = "simulator_backend.log"
         if os.path.exists(sim_log_path):
             try:
                 os.remove(sim_log_path)
@@ -366,7 +366,7 @@ def main():
             client_cwd = os.path.dirname(main_file)
         else:
             client_cmd = [client_bin]
-            client_cwd = "/tmp"
+            client_cwd = "."
             
         try:
             client_proc = subprocess.Popen(
