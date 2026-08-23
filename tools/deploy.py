@@ -64,6 +64,13 @@ def find_micropython_drive():
         )
     return drives[0] if drives else None
 
+def find_dfu_util_cmd():
+    """Finds the dfu-util command path."""
+    for cmd in ["dfu-util", "/opt/homebrew/bin/dfu-util", "/usr/local/bin/dfu-util", "/opt/local/bin/dfu-util"]:
+        if shutil.which(cmd) or os.path.exists(cmd):
+            return cmd
+    return None
+
 def find_st_flash_cmd():
     """Finds the st-flash command path."""
     for cmd in ["st-flash", "/opt/homebrew/bin/st-flash", "/usr/local/bin/st-flash", "/opt/local/bin/st-flash"]:
@@ -71,11 +78,36 @@ def find_st_flash_cmd():
             return cmd
     return None
 
+def is_dfu_device_connected(dfu_util_cmd):
+    """Checks if an STM32 DFU device is currently connected."""
+    try:
+        res = subprocess.run([dfu_util_cmd, "-l"], capture_output=True, text=True)
+        return "0483:df11" in res.stdout
+    except Exception:
+        return False
+
 def flash_firmware(central_bin_path):
     """Flashes the firmware binary onto the board.
-    Tries st-flash first (which is fast and avoids ST-Link USB mass storage hangs).
-    Falls back to ST-Link USB mass storage copy if st-flash is not available.
+    Tries USB DFU via dfu-util first, then st-flash, and falls back to ST-Link USB mass storage copy.
     """
+    dfu_util_cmd = find_dfu_util_cmd()
+    if dfu_util_cmd and is_dfu_device_connected(dfu_util_cmd):
+        print(f"Using direct USB DFU flash via '{dfu_util_cmd}' (over USB OTG)...")
+        try:
+            # 0x08000000 is the flash start address. :leave tells dfu-util to jump to application after programming.
+            subprocess.run([
+                dfu_util_cmd, 
+                "-a", "0", 
+                "-d", "0483:df11", 
+                "--dfuse-address", "0x08000000:leave", 
+                "-D", central_bin_path
+            ], check=True)
+            print("Success! Firmware flashed via USB DFU. Board reset triggered.")
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"Warning: USB DFU flashing failed: {e}")
+            print("Falling back to other flashing methods...")
+
     st_flash_cmd = find_st_flash_cmd()
     if st_flash_cmd:
         print(f"Using direct SWD flash via '{st_flash_cmd}' (fast & reliable)...")

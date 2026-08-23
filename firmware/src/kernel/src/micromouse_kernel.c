@@ -150,6 +150,35 @@ void kernel_set_pwm(int16_t left_pwm, int16_t right_pwm) {
     }
 }
 
+void jump_to_bootloader(void) {
+    // Stop motors for safety
+    kernel_set_pwm(0, 0);
+    
+    // Disable NVIC interrupts
+    __disable_irq();
+    
+    // Disable SysTick
+    SysTick->CTRL = 0;
+    
+    // Clear any pending interrupts in NVIC
+    for (int i = 0; i < 8; i++) {
+        NVIC->ICER[i] = 0xFFFFFFFF;
+        NVIC->ICPR[i] = 0xFFFFFFFF;
+    }
+    
+    // Set up the jump address for STM32L4 (System Memory begins at 0x1FFF0000)
+    uint32_t jump_addr = *(__IO uint32_t *)(0x1FFF0004);
+    void (*SysMemBootJump)(void) = (void (*)(void))jump_addr;
+    
+    // Set Main Stack Pointer (MSP) to bootloader's stack pointer
+    __set_MSP(*(__IO uint32_t *)(0x1FFF0000));
+    
+    // Jump!
+    SysMemBootJump();
+    
+    while (1);
+}
+
 const KernelState_t* kernel_get_state(void) {
     return &current_state;
 }
@@ -192,6 +221,9 @@ void kernel_parse_downlink(const char* rx_string) {
             extern HAL_StatusTypeDef ZD25WQ80C_ChipErase(void);
             kernel_set_pwm(0, 0);
             ZD25WQ80C_ChipErase();
+        }
+        if (strstr(rx_string, "\"bootloader\":1") != NULL) {
+            jump_to_bootloader();
         }
     }
     else if (strstr(rx_string, "\"p\":") != NULL) {

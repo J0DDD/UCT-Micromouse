@@ -24,6 +24,28 @@ To run Python code, the microcontroller needs the MicroPython firmware engine.
 4. **Drag and drop** `micropython.bin` directly onto that virtual flash drive.
 5. The LED on the programmer will blink rapidly for a few seconds and then turn solid. The MicroPython engine is now flashed!
 
+### 🔌 Alternative: Flash over USB OTG using DFU (No ST-Link)
+
+If you are programmed to run without an ST-Link programmer, you can flash the firmware binary directly over the USB OTG port using the built-in system bootloader:
+
+1. **Install `dfu-util`:**
+   * **macOS (Homebrew):** Run `brew install dfu-util` in your terminal.
+   * **Windows:** Download the binary from the official website and add it to your PATH.
+2. **Enter DFU Bootloader Mode:**
+   * If MicroPython is running, open the REPL and execute:
+     ```python
+     import machine
+     machine.bootloader()
+     ```
+   * If the board is unprogrammed or locked, bridge the `BOOT0` header pin to `3V3` (using a jumper or screwdriver tip) while pressing and releasing the **RESET** button.
+3. **Flash the Firmware:**
+   * Connect your laptop directly to the **USB OTG** port on the board.
+   * Run the central deployment tool:
+     ```bash
+     python3 tools/deploy.py --engine micropython --flash
+     ```
+     *(The tool will auto-detect the DFU state and flash the binary via `dfu-util` over your OTG cable).*
+
 ---
 
 ## 📂 Step 3: Mount the USB Drive (`UCT_MMOUSE`)

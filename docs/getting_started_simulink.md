@@ -48,8 +48,14 @@ Once your model works in simulation, compile it directly into STM32 assembly/bin
 1. Open `matlab/simulink/UCT_KDeploy.slx`.
 2. This is the hardware deployment model which references `StudentTemplate.slx`.
 3. Press **`Cmd + B`** (macOS) or **`Ctrl + B`** (Windows) to trigger compilation.
-4. MATLAB's Embedded Coder will compile the C-Kernel, inject your controller logic, and flash the compiled binary directly onto the STM32 over the ST-LINK programmer.
-5. Once flashing completes, disconnect the USB cable and place the mouse on the ground. Press the black **RESET** button to run your compiled Simulink model!
+4. MATLAB's Embedded Coder will compile the C-Kernel and inject your controller logic.
+5. Once compilation is complete, flash the binary directly to the board. If you do not have an ST-LINK programmer, you can flash it over the **USB OTG** port using DFU:
+   * Bridge the `BOOT0` header pin to `3V3` (using a jumper or screwdriver tip) while pressing and releasing the **RESET** button to enter DFU mode.
+   * Run the deployment script from your terminal:
+     ```bash
+     python3 tools/deploy.py --engine simulink --flash
+     ```
+6. Disconnect the USB cable, place the mouse on the ground, and press the black **RESET** button to run your compiled Simulink model!
 
 ---
 
