@@ -1,67 +1,59 @@
 # =========================================================================
-# UCT Micromouse - Milestone 1: Run a 1 m × 1 m Square (Reference)
+# UCT Micromouse - Milestone 1: Run a Square (1m x 1m) (Framework)
 # =========================================================================
-# ALGORITHM:
-#   Drive a 1.0 m × 1.0 m square (4 sides × 4 right-angle turns) using
-#   closed-loop feedback on BOTH phases:
+# ASSIGNMENT DESCRIPTION:
+# Implement a control loop to drive the mouse in a 1 meter by 1 meter square,
+# turning 90 degrees at each corner, and returning to the start position.
+# 
+# KEY CONTROLS:
+# - uct_mouse.set_motors(left_pwm, right_pwm) -> Set speed (-100 to 100)
+# - uct_mouse.get_encoders() -> Returns (left_ticks, right_ticks)
+# - uct_mouse.get_tof()      -> Returns (left_mm, center_mm, right_mm)
+# - uct_mouse.delay_ms(ms)   -> Suspends execution and updates sensors
 #
-#   Straight phase  — Fused encoder + gyro control.
-#       Encoder balance (P-controller) compensates for motor speed asymmetry.
-#       Gyro heading integration corrects residual drift that encoder-only
-#       control cannot eliminate (steady-state P-error + wheel slip).
-#       Both corrections are summed into each motor PWM command.
-#
-#   Turn phase      — Gyroscope integration.
-#       The on-board IMU gyro (°/s) is integrated over time. Motors run
-#       opposite directions until the accumulated heading change reaches 90°.
-#       This is robust to motor-speed asymmetry because the gyro directly
-#       measures angular rate—it does not care which wheel is faster.
-#
-# GRADING NOTE (from test_suite.py):
-#   The autograder applies 8% motor imbalance + 8% wheel slip.
-#   Open-loop timing (e.g. delay_ms(1500)) will accumulate large heading
-#   errors and score poorly. The gyro turn + encoder straight implemented
-#   here directly compensates for both perturbations.
-#
-# TUNING:
-#   1. Run milestone 1 with VERBOSE = True and observe the printed values.
-#   2. Adjust TICKS_PER_M until one straight phase covers exactly 1.0 m.
-#   3. If turns are under/over-shooting, adjust GYRO_GAIN (starts at 1.0).
+# GRADING:
+# - The autograder applies 8% motor imbalance and 8% wheel slip.
+# - Open-loop timing alone will accumulate errors. Use encoder and gyro
+#   feedback to compensate.
 # =========================================================================
 
 import uct_mouse
+import math
 
 # ---------------------------------------------------------------------------
-# Tuning constants — calibrate these for your specific mouse
+# Tuning constants — To be calibrated for scenario
 # ---------------------------------------------------------------------------
-SIDE_LENGTH_M   = 1.00          # metres per straight
-TICKS_PER_M     = 5730          # encoder ticks per metre — matches simulator config (tpr=1170, R=0.0325m)
-SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
+
+# Shape Tuning
+SIDE_LENGTH_M   = 1.00 # metres per straight
+GYRO_TARGET_DEG = 90.0 # target turn angle in degrees
+SIDES_TO_TRAVEL = 4  # number of sides to travel
+
+# Encoder Variables
+TICK_DIST_M = (2.0 * math.pi * 0.031) / 8.0 # Distance in metres that mouse travels per encoder tick. Determined by (2*pi*r) / encoder resolution i.e. wheel radius is 31mm and there are 8 ticks per revolution 
+SIDE_TICKS = int(SIDE_LENGTH_M * (1 / TICK_DIST_M)) # number of encoder ticks per side travelled
+
 # Speed & Drive Tuning
-FWD_SPEED       = 70.0          # forward target speed (0 ... 100 range, mapped above deadband)
-TURN_PWM        = 70            # in-place turning PWM (each wheel)
-TURN_PWM_SLOW   = 64            # reduced turn PWM as we approach target (must still be above dead_bands)
+FWD_SPEED       = 70.0          # forward target speed (0 ... 100 range)
+TURN_SPEED        = 70.0            # in-place turning PWM (each wheel)
 
-# Controller Gains
-KP_BALANCE      = 0.5           # P-gain: corrects left/right encoder imbalance during straight
-KH_HEADING      = 1.5           # P-gain: corrects accumulated heading drift via gyro integration
+# Controller Gains (PID variables)
+KP_DIST = 3 
+KI_DIST = 2.5
 
-# Physical Hardware Calibration Constants (Simulator Dead-bands)
-LEFT_DEADBAND   = 58.0          # Left motor dead-band threshold
-RIGHT_DEADBAND  = 62.0          # Right motor dead-band threshold
+KP_HEAD = 1
+KD_HEAD = -1
 
-# Slew-Rate Limits (Acceleration Control)
-MAX_SLEW_PER_STEP = 2.0         # Max change in command per 10ms step (equivalent to 200 units/sec)
+# Kalman Filter Constants
 
-GYRO_TARGET_DEG = 90.0          # target turn angle in degrees
-GYRO_GAIN       = 0.91          # scale factor (calibrated for physical ground rotation)
-GYRO_SLOP_DEG   = 4.0           # slow-down threshold: reduce power in final X degrees of turn
+# Physical Hardware Calibration (Minimum PWM threshold to get the wheel to actually start spinning, i.e. overcome static friction, etc)
+LEFT_DEADBAND   = 40          # Left motor dead-band threshold
+RIGHT_DEADBAND  = 40          # Right motor dead-band threshold
 
 VERBOSE         = True          # print debug info during run
 
-
 # ---------------------------------------------------------------------------
-# Helpers to read sensors cleanly
+# Sensor Reading Helper Functions - Handles Pre-Filter Sensor Readings
 # ---------------------------------------------------------------------------
 
 GYRO_BIAS = 0.0
@@ -71,7 +63,6 @@ def _sensors():
     lenc, renc = uct_mouse.get_encoders()
     gyro = uct_mouse.get_gyro()
     return lenc, renc, gyro - GYRO_BIAS
-
 
 def calibrate_gyro():
     """
@@ -95,183 +86,116 @@ def calibrate_gyro():
         
     GYRO_BIAS = sum(samples) / len(samples)
     print(f"  [Calibrating Gyro] Complete. Estimated bias: {GYRO_BIAS:.4f} dps")
+    print("---------------------------------")
+    print()
 
 
 # ---------------------------------------------------------------------------
-# Slew-Rate and Dead-band Helpers
+# Sensor Reading Improvement - Kalman Filter
 # ---------------------------------------------------------------------------
-
-current_l = 0.0
-current_r = 0.0
-
-def apply_deadband(cmd_l: float, cmd_r: float) -> tuple:
-    """Applies deadband offset feed-forward to raw controller motor outputs."""
-    # Left motor mapping
-    if cmd_l > 0:
-        pwm_l = LEFT_DEADBAND + cmd_l * (100.0 - LEFT_DEADBAND) / 100.0
-    elif cmd_l < 0:
-        pwm_l = -LEFT_DEADBAND + cmd_l * (100.0 - LEFT_DEADBAND) / 100.0
-    else:
-        pwm_l = 0.0
-
-    # Right motor mapping
-    if cmd_r > 0:
-        pwm_r = RIGHT_DEADBAND + cmd_r * (100.0 - RIGHT_DEADBAND) / 100.0
-    elif cmd_r < 0:
-        pwm_r = -RIGHT_DEADBAND + cmd_r * (100.0 - RIGHT_DEADBAND) / 100.0
-    else:
-        pwm_r = 0.0
-
-    return int(pwm_l), int(pwm_r)
+"""
+    TODO: Implement Kalman Filtering techniques to improve sensor readings
+    """
 
 
-def set_motors_ramped(target_l: float, target_r: float, slew_rate: float = MAX_SLEW_PER_STEP):
-    """Slew-rate limits the motor inputs to prevent wheel slip on rapid acceleration."""
-    global current_l, current_r
+# ---------------------------------------------------------------------------
+# Sensor Readings Conversion - Updating the current state of the micromouse
+# ---------------------------------------------------------------------------
+def update_state(current_dist_m, current_heading_deg, dt_s):
+    """Calculates physical position and angle from raw sensors."""
+    lenc, renc, gyro_dps = _sensors()
     
-    diff_l = target_l - current_l
-    diff_r = target_r - current_r
+    # Convert encoders to distance
+    avg_ticks = (lenc + renc) / 2.0
+    current_dist_m = avg_ticks * TICK_DIST_M
     
-    current_l += max(-slew_rate, min(slew_rate, diff_l))
-    current_r += max(-slew_rate, min(slew_rate, diff_r))
+    # Convert gyro to angle
+    current_heading_deg += gyro_dps * dt_s
     
-    pwm_l, pwm_r = apply_deadband(current_l, current_r)
-    
-    # Clamp to safe physical ranges
-    pwm_l = max(-95, min(95, pwm_l))
-    pwm_r = max(-95, min(95, pwm_r))
-    
-    uct_mouse.set_motors(pwm_l, pwm_r)
+    return current_dist_m, current_heading_deg, gyro_dps
 
+# ---------------------------------------------------------------------------
+# Controller Logic - PID logic for distance and heading (angle the MM is heading)
+# ---------------------------------------------------------------------------
+def calc_distance_pi(target_m, current_m, dt_s, err_sum):
+    error = target_m - current_m
+    err_sum += error * dt_s
+    base_speed = (KP_DIST * error) + (KI_DIST * err_sum)
+    return base_speed, err_sum
 
-def stop_motors():
-    """Forces an immediate hard stop and resets current ramp state."""
-    global current_l, current_r
-    current_l = 0.0
-    current_r = 0.0
-    uct_mouse.set_motors(0, 0)
+def calc_heading_pd(target_deg, current_deg, gyro_dps):
+    error = target_deg - current_deg
+    # The gyro directly provides the derivative of heading
+    steering_correction = (KP_HEAD * error) - (KD_HEAD * gyro_dps)
+    return steering_correction
 
+# ---------------------------------------------------------------------------
+# Combine Error Correction - Correct speed and angle
+# ---------------------------------------------------------------------------
+def apply_motor_mixer(base_speed, steering_correction):
+    l_speed = base_speed + steering_correction
+    r_speed = base_speed - steering_correction
+    
+    # Clamp to max physical limits (-100 to 100)
+    l_pwm = max(-100, min(100, int(l_speed)))
+    r_pwm = max(-100, min(100, int(r_speed)))
+    
+    uct_mouse.set_motors(l_pwm, r_pwm)
 
 # ---------------------------------------------------------------------------
 # Movement primitive: drive one straight side
 # ---------------------------------------------------------------------------
 
-def drive_straight(side_num: int):
+def drive_straight(distance_m):
     """
-    Drive forward exactly SIDE_LENGTH_M metres using fused encoder + gyro control.
-
-    Two correction terms are summed into each motor PWM every physics step:
-
-      1. Encoder balance (KP_BALANCE):
-         Measures the tick-count difference between wheels and applies a
-         proportional correction. Compensates for motor gain asymmetry but
-         has a non-zero steady-state error under pure P-control.
-
-      2. Gyro heading (KH_HEADING):
-         Integrates the gyro (°/s) over time to measure accumulated heading
-         drift. Positive drift (curving left / CCW) increases right-motor
-         PWM and decreases left-motor PWM to steer back. This catches what
-         the encoder balance misses: steady-state P-error and wheel slip.
-
-    The loop exits when the average of both encoder deltas reaches SIDE_TICKS.
+    TODO: Implement closed-loop straight line control.
+    Use encoder counts to measure distance, and gyroscope Z-axis angular rate
+    (gyro) to correct heading drift.
     """
+    print(f"Driving straight for {distance_m}m...")
+    # Student code here
+    # Snapshot starting encoder values
     lenc0, renc0, _ = _sensors()
-    target = SIDE_TICKS
-    dt_s   = 0.010          # 100Hz control loop step
-    heading_drift = 0.0     # accumulated heading error in degrees (+ = drifting CCW/left)
-
-    if VERBOSE:
-        print(f"  [Side {side_num}] Driving {SIDE_LENGTH_M} m  (target {target} ticks)...")
-
-    while True:
-        lenc, renc, gyro_dps = _sensors()
-        dl = lenc - lenc0
-        dr = renc - renc0
-        avg = (dl + dr) / 2.0
-
-        if avg >= target:
-            break
-
-        # Integrate heading drift (CCW = positive gyro = curving left)
-        heading_drift += gyro_dps * dt_s
-
-        # Term 1: encoder balance — keeps arc lengths equal
-        cross_error = dl - dr
-        enc_correction = KP_BALANCE * cross_error
-
-        # Term 2: gyro heading — drives heading drift back to zero
-        #   drift > 0 → curving left → increase right, decrease left
-        heading_correction = KH_HEADING * heading_drift
-
-        l_speed = FWD_SPEED - enc_correction + heading_correction
-        r_speed = FWD_SPEED + enc_correction - heading_correction
-
-        # Clamp speed commands to safe controller bounds
-        l_speed = max(0.0, min(100.0, l_speed))
-        r_speed = max(0.0, min(100.0, r_speed))
-
-        # Use a gentler slew rate (1.0) on the very first side to prevent starting wheel-spin, 
-        # and normal slew rate (2.0) on subsequent sides.
-        slew = 1.0 if side_num == 1 else MAX_SLEW_PER_STEP
-        set_motors_ramped(l_speed, r_speed, slew)
-        uct_mouse.delay_ms(10)  # Exchange commands and step the simulator physics (10ms rate)
-
-    # Hard stop
-    stop_motors()
-    lenc_f, renc_f, _ = _sensors()
-    if VERBOSE:
-        dl_f = lenc_f - lenc0
-        dr_f = renc_f - renc0
-        print(f"  [Side {side_num}] Done. Ticks L={dl_f}  R={dr_f}  "
-              f"imbalance={abs(dl_f-dr_f)} ticks  heading_drift={heading_drift:.1f}°")
-
-    uct_mouse.delay_ms(120)   # coast and settle before turning
-
+    target_ticks = int(SIDE_TICKS)
+    
+    current_dist = 0.0
+    current_heading = 0.0
+    err_sum = 0.0
+    dt_s = 0.010  # 10ms control loop step
+    
+    while current_dist < target_ticks * TICK_DIST_M:
+        # 1. Update state and sensors
+        current_dist, current_heading, gyro_dps = update_state(current_dist, current_heading, dt_s)
+        
+        # 2. Calculate PI distance and PD heading corrections
+        base_speed, err_sum = calc_distance_pi(distance_m, current_dist, dt_s, err_sum)
+        steering_correction = calc_heading_pd(0.0, current_heading, gyro_dps)
+        
+        # 3. Mix outputs and send to motors
+        apply_motor_mixer(base_speed, steering_correction)
+                
+        # 4. Pace loop timing (critical for physical hardware)
+        uct_mouse.delay_ms(10)
+        
+    # Stop motors after reaching distance
+    uct_mouse.set_motors(0, 0)
 
 # ---------------------------------------------------------------------------
-# Movement primitive: turn 90° clockwise using gyro integration
+# Movement primitive: turn 90°
 # ---------------------------------------------------------------------------
 
-def turn_left_90(corner_num: int):
+def turn_left_90():
     """
-    Rotate 90° counter-clockwise in place using gyro integration.
-
-    Strategy:
-      - Right wheel drives forward, left wheel drives backward (CCW spin).
-      - gyro_dps is positive CCW (right-hand rule Z-axis), so we integrate
-        positively: accumulated += gyro_dps × dt
-      - Slow-crawl in final GYRO_SLOP_DEG degrees to prevent overshoot.
-
-    This traces: East → North → West → South → East, which fits the
-    simulator's starting orientation (theta=0, facing East) inside the arena.
+    TODO: Implement closed-loop turning control.
+    Use the gyroscope Z-axis angular rate (gyro) to integrate heading angle
+    and turn exactly 90 degrees counter-clockwise.
     """
-    if VERBOSE:
-        print(f"  [Corner {corner_num}] Turning 90° CCW...")
-
-    accumulated = 0.0
-    dt_s = 0.010   # 10ms step size
-
-    while accumulated < GYRO_TARGET_DEG * GYRO_GAIN:
-        _, _, gyro_dps = _sensors()
-
-        # gyro_dps is positive CCW — integrate directly for a CCW (left) turn.
-        step_deg = gyro_dps * dt_s
-        accumulated += step_deg
-
-        remaining = GYRO_TARGET_DEG * GYRO_GAIN - accumulated
-
-        if remaining <= GYRO_SLOP_DEG:
-            uct_mouse.set_motors(-TURN_PWM_SLOW, TURN_PWM_SLOW)
-        else:
-            uct_mouse.set_motors(-TURN_PWM, TURN_PWM)
-        uct_mouse.delay_ms(10)  # Exchange commands and step the simulator physics (10ms rate)
-
-    stop_motors()
-    if VERBOSE:
-        print(f"  [Corner {corner_num}] Turn complete. Accumulated {accumulated:.1f}°")
-
-    uct_mouse.delay_ms(150)
-
+    print("Turning 90 degrees left...")
+    # Student code here
+    uct_mouse.set_motors(-TURN_SPEED, TURN_SPEED)
+    uct_mouse.delay_ms(600)
+    uct_mouse.set_motors(0, 0)
+    pass
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -282,7 +206,7 @@ def run_square():
         print("Initialization failed.")
         return
 
-    # Load per-chassis polarity calibration
+    # Load polarity calibration if it exists
     try:
         with open("polarity.txt", "r") as f:
             lines = f.read().strip().split(",")
@@ -291,16 +215,16 @@ def run_square():
                 uct_mouse.set_encoder_polarity(int(lines[2]), int(lines[3]))
     except Exception:
         uct_mouse.set_polarity(-1, -1)
-        uct_mouse.set_encoder_polarity(1, 1)
+        uct_mouse.set_encoder_polarity(-1,-1)
 
-    print("=== Milestone 1: Run a 1 m × 1 m Square ===")
-    print(f"  Encoder target : {SIDE_TICKS} ticks/side  ({TICKS_PER_M} ticks/m)")
-    print(f"  Turn target    : {GYRO_TARGET_DEG}° (gain={GYRO_GAIN})")
+    print("--- Milestone 1: Run a Square ---")
+    print(f"  Encoder target : {SIDE_TICKS} ticks/side  ({1.00 / TICK_DIST_M} ticks/m)")
+    print(f"  Turn target    : {GYRO_TARGET_DEG}°")
+    print("---------------------------------")
     print()
 
-    # Perform gyro calibration before movement begins
+    # Calibrate gyroscope before movement starts
     calibrate_gyro()
-    print()
 
     # On physical hardware, wait for user button SW1 (PE6) press before starting
     import sys
@@ -311,16 +235,28 @@ def run_square():
         print("Starting in 1 second...")
         uct_mouse.delay_ms(1000)
 
-    for i in range(4):
-        drive_straight(i + 1)
-        turn_left_90(i + 1)
+    for side in range(SIDES_TO_TRAVEL):
+        # 1. State current side
+        print(f"Side: {side}")
+        # 2. Drive forward 1 meter
+        uct_mouse.set_motors(LEFT_DEADBAND, RIGHT_DEADBAND)
+        drive_straight(SIDE_LENGTH_M)
+        
+        # 3. Settle briefly
+        uct_mouse.set_motors(0, 0)
+        uct_mouse.delay_ms(200)
+        
+        # 4. Turn 90 degrees left
+        turn_left_90()
+        
+        # 5. Settle briefly
+        uct_mouse.set_motors(0, 0)
+        uct_mouse.delay_ms(200)
 
     # Final stop
-    uct_mouse.set_motors(0, 0)
-    uct_mouse.delay_ms(3000)  # Stop for at least 3 seconds to trigger autograder evaluation completion
+    uct_mouse.delay_ms(2800)  # Stop for at least 3 seconds to trigger autograder evaluation completion
     print()
     print("=== Milestone 1 Complete! ===")
-
 
 if __name__ == "__main__":
     run_square()

@@ -20,7 +20,82 @@
 import uct_mouse
 import math
 
-TICK_DIST_M = (2.0 * math.pi * 0.031) / 8.0
+# ---------------------------------------------------------------------------
+# Tuning constants — To be calibrated for scenario
+# ---------------------------------------------------------------------------
+
+# Shape Tuning
+SIDE_LENGTH_M   = 1.00 # metres per straight
+GYRO_TARGET_DEG = 90.0 # target turn angle in degrees
+SIDES_TO_TRAVEL = 4  # number of sides to travel
+
+# Encoder Variables
+TICK_DIST_M = (2.0 * math.pi * 0.031) / 8.0 # Distance in metres that mouse travels per encoder tick. Determined by (2*pi*r) / encoder resolution i.e. wheel radius is 31mm and there are 8 ticks per revolution 
+SIDE_TICKS = int(SIDE_LENGTH_M * (1 / TICK_DIST_M)) # number of encoder ticks per side travelled
+
+# Speed & Drive Tuning
+FWD_SPEED       = 70.0          # forward target speed (0 ... 100 range)
+TURN_SPEED        = 70.0            # in-place turning PWM (each wheel)
+
+# Controller Gains (PID variables)
+
+# Kalman Filter Constants
+
+# Physical Hardware Calibration (Minimum PWM threshold to get the wheel to actually start spinning, i.e. overcome static friction, etc)
+# LEFT_DEADBAND   =           # Left motor dead-band threshold
+# RIGHT_DEADBAND  =           # Right motor dead-band threshold
+
+VERBOSE         = True          # print debug info during run
+
+# ---------------------------------------------------------------------------
+# Sensor Reading Helper Functions - Handles Pre-Filter Sensor Readings
+# ---------------------------------------------------------------------------
+
+GYRO_BIAS = 0.0
+
+def _sensors():
+    """Returns (lenc, renc, gyro_dps) from the current shadow state, subtracting gyro bias."""
+    lenc, renc = uct_mouse.get_encoders()
+    gyro = uct_mouse.get_gyro()
+    return lenc, renc, gyro - GYRO_BIAS
+
+def calibrate_gyro():
+    """
+    Calibrates the gyroscope Z-axis bias while the mouse is stationary.
+    Collects 100 samples over 1.0 second (10ms intervals) to calculate average bias.
+    """
+    global GYRO_BIAS
+    print("  [Calibrating Gyro] Please keep the mouse still...")
+    
+    uct_mouse.set_motors(0, 0)
+    
+    # Sensor warm-up: let socket connection and telemetry stream stabilize (200ms)
+    for _ in range(20):
+        uct_mouse.delay_ms(10)
+        
+    GYRO_BIAS = 0.0  # Zero out bias during calibration run
+    samples = []
+    for _ in range(100):  # 100 samples at 10ms = 1.0 second
+        uct_mouse.delay_ms(10)
+        samples.append(uct_mouse.get_gyro())
+        
+    GYRO_BIAS = sum(samples) / len(samples)
+    print(f"  [Calibrating Gyro] Complete. Estimated bias: {GYRO_BIAS:.4f} dps")
+    print("---------------------------------")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Sensor Reading Helper Functions - Handles Pre-Filter Sensor Readings
+# ---------------------------------------------------------------------------
+"""
+    TODO: Implement Kalman Filtering techniques to improve sensor readings
+    """
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Movement primitive: drive one straight side
+# ---------------------------------------------------------------------------
 
 def drive_straight(distance_m):
     """
@@ -30,11 +105,14 @@ def drive_straight(distance_m):
     """
     print(f"Driving straight for {distance_m}m...")
     # Student code here
-    # Example (open-loop, prone to errors):
-    # uct_mouse.set_motors(50, 50)
-    # uct_mouse.delay_ms(1500)
-    # uct_mouse.set_motors(0, 0)
+    uct_mouse.set_motors(FWD_SPEED, FWD_SPEED)
+    uct_mouse.delay_ms(1500)
+    uct_mouse.set_motors(0, 0)
     pass
+
+# ---------------------------------------------------------------------------
+# Movement primitive: turn 90°
+# ---------------------------------------------------------------------------
 
 def turn_left_90():
     """
@@ -44,11 +122,14 @@ def turn_left_90():
     """
     print("Turning 90 degrees left...")
     # Student code here
-    # Example (open-loop, prone to errors):
-    # uct_mouse.set_motors(-35, 35)
-    # uct_mouse.delay_ms(600)
-    # uct_mouse.set_motors(0, 0)
+    uct_mouse.set_motors(-TURN_SPEED, TURN_SPEED)
+    uct_mouse.delay_ms(600)
+    uct_mouse.set_motors(0, 0)
     pass
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def run_square():
     if not uct_mouse.init():
@@ -66,10 +147,26 @@ def run_square():
         uct_mouse.set_polarity(1, 1)
 
     print("--- Milestone 1: Run a Square ---")
+    print(f"  Encoder target : {SIDE_TICKS} ticks/side  ({1.00 / TICK_DIST_M} ticks/m)")
+    print(f"  Turn target    : {GYRO_TARGET_DEG}°")
+    print("---------------------------------")
+    print()
 
-    for side in range(4):
+    # Calibrate gyroscope before movement starts
+    calibrate_gyro()
+
+    # On physical hardware, wait for user button SW1 (PE6) press before starting
+    import sys
+    if sys.platform in ('pyboard', 'stm32'):
+        print("Press SW1 (User button) on the board to start the run...")
+        while uct_mouse.get_button() == 0:
+            uct_mouse.delay_ms(50)
+        print("Starting in 1 second...")
+        uct_mouse.delay_ms(1000)
+
+    for side in range(SIDES_TO_TRAVEL):
         # 1. Drive forward 1 meter
-        drive_straight(1.0)
+        drive_straight(SIDE_LENGTH_M)
         
         # 2. Settle briefly
         uct_mouse.set_motors(0, 0)
@@ -82,7 +179,10 @@ def run_square():
         uct_mouse.set_motors(0, 0)
         uct_mouse.delay_ms(200)
 
-    print("Milestone 1 Completed!")
+    # Final stop
+    uct_mouse.delay_ms(2800)  # Stop for at least 3 seconds to trigger autograder evaluation completion
+    print()
+    print("=== Milestone 1 Complete! ===")
 
 if __name__ == "__main__":
     run_square()
