@@ -37,7 +37,7 @@ TICK_DIST_M = 1 / TICKS_PER_M
 SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
 
 # Speed & Drive Tuning
-FWD_SPEED       = 70.0      # forward target speed (0 ... 100 range)
+FWD_SPEED       = 85.0      # forward target speed (0 ... 100 range)
 MIN_SPEED       = 50.0      # minimum speed that motor needs to turn at
 MAX_SPEED       = 100.0     # maximum speed that motors can turn at
 TURN_SPEED      = 70.0      # in-place turning PWM (each wheel)
@@ -46,10 +46,10 @@ TURN_SPEED      = 70.0      # in-place turning PWM (each wheel)
 KP_DIST = 1 
 KI_DIST = 1
 
-KP_HEAD = 5
+KP_HEAD = 20
 KI_HEAD = 1
-KD_HEAD = 1
-KB_HEAD = 1 / KI_HEAD # Kb is a tuning gain and is typically 1/Ki 
+KD_HEAD = 0.5
+KB_HEAD = 0.1 # 1 / KI_HEAD # Kb is a tuning gain and is typically 1/Ki 
 
 # Kalman Filter Constants
 
@@ -75,7 +75,7 @@ def calibrate_gyro():
     global GYRO_BIAS
     print("  [Calibrating Gyro] Please keep the mouse still...")
     
-    uct_mouse.set_motors(0, 0)
+    safe_set_motors(0, 0)
     
     # Sensor warm-up: let socket connection and telemetry stream stabilize (200ms)
     for _ in range(20):
@@ -144,6 +144,7 @@ def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
 
     steering_correction = P + I + D
     steering_correction = max( -(FWD_SPEED - MIN_SPEED), min(steering_correction, MAX_SPEED - FWD_SPEED))
+    print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
     return steering_correction, I
 
 # ---------------------------------------------------------------------------
@@ -157,7 +158,7 @@ def apply_motor_correction(steering_correction):
     l_pwm = max(MIN_SPEED, min(MAX_SPEED, int(l_speed)))
     r_pwm = max(MIN_SPEED, min(MAX_SPEED, int(r_speed)))
     
-    uct_mouse.set_motors(l_pwm, r_pwm)
+    safe_set_motors(l_pwm, r_pwm)
 
 # ---------------------------------------------------------------------------
 # Movement primitive: drive one straight side
@@ -194,7 +195,7 @@ def drive_straight(distance_m):
         uct_mouse.delay_ms(10)
         
     # Stop motors after reaching distance
-    uct_mouse.set_motors(0, 0)
+    safe_set_motors(0, 0)
 
 # ---------------------------------------------------------------------------
 # Movement primitive: turn 90°
@@ -208,10 +209,18 @@ def turn_left_90():
     """
     print("Turning 90 degrees left...")
     # Student code here
-    uct_mouse.set_motors(-TURN_SPEED, TURN_SPEED)
+    safe_set_motors(-TURN_SPEED, TURN_SPEED)
     uct_mouse.delay_ms(600)
-    uct_mouse.set_motors(0, 0)
+    safe_set_motors(0, 0)
     pass
+
+# ---------------------------------------------------------------------------
+# Movement Input - Setting Motor Speed
+# ---------------------------------------------------------------------------
+def safe_set_motors(l, r):
+    """Always sends integer PWM values to the hardware, regardless of
+    whether the caller passed floats."""
+    uct_mouse.set_motors(int(l), int(r))
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -255,18 +264,18 @@ def run_square():
         # 1. State current side
         print(f"Side: {side}")
         # 2. Drive forward 1 meter
-        uct_mouse.set_motors(FWD_SPEED, FWD_SPEED)
+        safe_set_motors(FWD_SPEED, FWD_SPEED)
         drive_straight(SIDE_LENGTH_M)
         
         # 3. Settle briefly
-        uct_mouse.set_motors(0, 0)
+        safe_set_motors(0, 0)
         uct_mouse.delay_ms(200)
         
         # 4. Turn 90 degrees left
         turn_left_90()
         
         # 5. Settle briefly
-        uct_mouse.set_motors(0, 0)
+        safe_set_motors(0, 0)
         uct_mouse.delay_ms(200)
 
     # Final stop
