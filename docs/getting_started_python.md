@@ -32,12 +32,11 @@ If you are programmed to run without an ST-Link programmer, you can flash the fi
    * **macOS (Homebrew):** Run `brew install dfu-util` in your terminal.
    * **Windows:** Download the binary from the official website and add it to your PATH.
 2. **Enter DFU Bootloader Mode:**
-   * If MicroPython is running, open the REPL and execute:
+   * Open the REPL interface over your OTG cable and execute:
      ```python
      import machine
      machine.bootloader()
      ```
-   * If the board is unprogrammed or locked, bridge the `BOOT0` header pin to `3V3` (using a jumper or screwdriver tip) while pressing and releasing the **RESET** button.
 3. **Flash the Firmware:**
    * Connect your laptop directly to the **USB OTG** port on the board.
    * Run the central deployment tool:

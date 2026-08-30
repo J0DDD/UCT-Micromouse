@@ -40,6 +40,7 @@ def main():
         
         # Simulator components
         (os.path.join(root_dir, "tools", "physics_sim.py"), "physics_sim.py"),
+        (os.path.join(root_dir, "tools", "simulation_config.json"), "simulation_config.json"),
         (os.path.join(root_dir, "python", "micromouse.py"), "micromouse.py"),
         (os.path.join(root_dir, "python", "uct_mouse.py"), "uct_mouse.py"),
         

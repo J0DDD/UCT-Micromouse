@@ -178,11 +178,19 @@ class PhysicsSimulator:
         self.total_width = 0.143
         
         self.max_speed = 0.40
-        self.tau = 0.15
+        self.tau = 0.088
         self.imbalance = imbalance
         self.slip_coeff = slip
         self.dead_band_l = 60.0  # Default dead-band left motor
         self.dead_band_r = 60.0  # Default dead-band right motor
+        
+        # Initialize default IMU variables
+        self.gyro_bias = 0.0
+        self.gyro_noise_std = 0.0
+        self.accel_bias_x = 0.0
+        self.accel_bias_y = 0.0
+        self.accel_bias_z = 0.0
+        self.accel_noise_std = 0.0
         
         self.sensor_offsets = [
             (0.045, 0.02, math.pi/2),   # Left ToF
@@ -241,14 +249,6 @@ class PhysicsSimulator:
                 self.grid_size = mz.get("grid_size", self.grid_size)
                 self.block_dim = mz.get("block_dim", self.block_dim)
                 self.wall_thickness = mz.get("wall_thickness", self.wall_thickness)
-            
-            # Initialize default IMU variables
-            self.gyro_bias = 0.0
-            self.gyro_noise_std = 0.0
-            self.accel_bias_x = 0.0
-            self.accel_bias_y = 0.0
-            self.accel_bias_z = 0.0
-            self.accel_noise_std = 0.0
             
             if "imu" in config:
                 ic = config["imu"]
@@ -560,9 +560,21 @@ def main():
     # Initialize Video Writer if requested
     video_writer = None
     if args.video:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_writer = cv2.VideoWriter(args.video, fourcc, 20.0, (width, height))
-        print(f"[Simulator] Video recording enabled. Saving to: {args.video}")
+        # Try modern highly-compressed H.264 codecs first, fall back to standard mp4v for headless environments
+        for codec in ['avc1', 'h264', 'mp4v']:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                video_writer = cv2.VideoWriter(args.video, fourcc, 20.0, (width, height))
+                if video_writer.isOpened():
+                    print(f"[Simulator] Video recording enabled using codec '{codec}'. Saving to: {args.video}")
+                    break
+                else:
+                    video_writer.release()
+            except Exception:
+                pass
+        else:
+            print("[Simulator] Warning: Could not initialize any video writer codec.")
+            video_writer = None
         
     # Start TCP Socket Server
     port = 8000

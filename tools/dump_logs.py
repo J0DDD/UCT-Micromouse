@@ -62,12 +62,15 @@ def attempt_dump(port, is_mpy=False):
             line_bytes = ser.readline()
             if not line_bytes:
                 continue
+            start_time = time.time() # Reset inactivity timeout on receiving data
             line = line_bytes.decode('utf-8', errors='ignore').strip()
             
-            if "--- START LOG DUMP ---" in line:
-                print("Dump started...")
-                started = True
-                continue
+            if "--- START LOG DUMP ---" in line or line.startswith("{"):
+                if not started:
+                    print("Dump started...")
+                    started = True
+                if "--- START LOG DUMP ---" in line:
+                    continue
             elif "--- END LOG DUMP ---" in line:
                 print("Dump finished successfully.")
                 finished = True

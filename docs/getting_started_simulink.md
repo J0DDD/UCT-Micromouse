@@ -50,7 +50,7 @@ Once your model works in simulation, compile it directly into STM32 assembly/bin
 3. Press **`Cmd + B`** (macOS) or **`Ctrl + B`** (Windows) to trigger compilation.
 4. MATLAB's Embedded Coder will compile the C-Kernel and inject your controller logic.
 5. Once compilation is complete, flash the binary directly to the board. If you do not have an ST-LINK programmer, you can flash it over the **USB OTG** port using DFU:
-   * Bridge the `BOOT0` header pin to `3V3` (using a jumper or screwdriver tip) while pressing and releasing the **RESET** button to enter DFU mode.
+   * Enter DFU mode by opening the MicroPython REPL and running `import machine; machine.bootloader()`.
    * Run the deployment script from your terminal:
      ```bash
      python3 tools/deploy.py --engine simulink --flash

@@ -49,7 +49,7 @@ list(APPEND PIKA_SOURCES "src/kernel/src/uct_mouse_wrapper.c")
 file(GLOB STARTUP_SCRIPT "${TEMPLATE_DIR}/Core/Startup/*.s")
 
 # 3.1 Locate Simulink Autocoded Sources
-file(GLOB SIMULINK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/build/UCT_KDeploy_ert_rtw/*.c")
+file(GLOB SIMULINK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../build/UCT_KDeploy_ert_rtw/*.c")
 if(SIMULINK_SOURCES)
     list(FILTER SIMULINK_SOURCES EXCLUDE REGEX "ert_main\\.c")
 endif()
@@ -108,22 +108,28 @@ target_link_libraries(pikascript_firmware PRIVATE uct_kernel m)
 # Post-build bin generation for PikaScript
 add_custom_command(TARGET pikascript_firmware POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary pikascript_firmware pikascript_firmware.bin
+    COMMAND ${CMAKE_COMMAND} -E copy pikascript_firmware.bin ${CMAKE_CURRENT_SOURCE_DIR}/binaries/pikascript.bin
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/../build/bin
+    COMMAND ${CMAKE_COMMAND} -E copy pikascript_firmware.bin ${CMAKE_CURRENT_SOURCE_DIR}/../build/bin/pikascript.bin
     COMMAND ${CMAKE_SIZE} pikascript_firmware
-    COMMENT "Building pikascript_firmware.bin and printing footprint..."
+    COMMENT "Building pikascript_firmware.bin, updating release binary, and printing footprint..."
 )
 
 # --- TARGET 2: Simulink Firmware ---
 add_executable(simulink_firmware ${COMMON_SOURCES} ${SIMULINK_SOURCES})
 target_compile_definitions(simulink_firmware PRIVATE USE_HAL_DRIVER USE_FULL_LL_DRIVER STM32L476xx COMPILING_FOR_SIMULINK)
-target_include_directories(simulink_firmware PRIVATE ${COMMON_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/build/UCT_KDeploy_ert_rtw")
+target_include_directories(simulink_firmware PRIVATE ${COMMON_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/../build/UCT_KDeploy_ert_rtw")
 target_link_options(simulink_firmware PRIVATE ${COMMON_LINK_OPTIONS} -Wl,-Map=simulink_firmware.map)
 target_link_libraries(simulink_firmware PRIVATE uct_kernel m)
 
 # Post-build bin generation for Simulink
 add_custom_command(TARGET simulink_firmware POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary simulink_firmware simulink_firmware.bin
+    COMMAND ${CMAKE_COMMAND} -E copy simulink_firmware.bin ${CMAKE_CURRENT_SOURCE_DIR}/binaries/simulink.bin
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/../build/bin
+    COMMAND ${CMAKE_COMMAND} -E copy simulink_firmware.bin ${CMAKE_CURRENT_SOURCE_DIR}/../build/bin/simulink.bin
     COMMAND ${CMAKE_SIZE} simulink_firmware
-    COMMENT "Building simulink_firmware.bin and printing footprint..."
+    COMMENT "Building simulink_firmware.bin, updating release binary, and printing footprint..."
 )
 
 # --- Custom Flash Targets ---

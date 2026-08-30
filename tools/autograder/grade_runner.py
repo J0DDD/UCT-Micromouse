@@ -8,6 +8,7 @@ import signal
 import glob
 import importlib.util
 import shutil
+import tempfile
 
 # 1. Path Resolution
 if os.path.exists("/autograder"):
@@ -15,7 +16,7 @@ if os.path.exists("/autograder"):
     RESULTS_FILE = "/autograder/results/results.json"
     SOURCE_DIR = "/autograder/source"
     VIDEO_PATH = "/autograder/results/run.mp4"
-    TRAJECTORY_JSON = "/tmp/trajectory.json"
+    TRAJECTORY_JSON = os.path.join(tempfile.gettempdir(), "trajectory.json")
 else:
     # Local mock mode
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -132,6 +133,17 @@ def main():
     # 3. Detect submission track (Simulink vs Python)
     print(f"[Grader] Scanning submission directory: {SUBMISSION_DIR}")
     
+    # Clean up any student-submitted uct_mouse.py or micromouse.py files to prevent shadowing of the grader's corrected libraries
+    for root, dirs, files in os.walk(SUBMISSION_DIR):
+        for f in files:
+            if f in ["uct_mouse.py", "micromouse.py"]:
+                target_path = os.path.join(root, f)
+                print(f"[Grader] Cleaning up student-submitted framework override: {target_path}")
+                try:
+                    os.remove(target_path)
+                except Exception as e:
+                    print(f"[Grader] Warning: Failed to remove {target_path}: {e}")
+
     # Check for Simulink track by looking for any folder ending in _ert_rtw
     ert_dirs = []
     for root, dirs, files in os.walk(SUBMISSION_DIR):
@@ -208,7 +220,11 @@ def main():
             return
 
     # 4. Compilation if Simulink track
+<<<<<<< HEAD
     client_bin = "simulink_client.exe"
+=======
+    client_bin = os.path.join(tempfile.gettempdir(), "simulink_client")
+>>>>>>> ccec4d39a3e4fd3181170c9d5dd707616fc703bb
     if track == "simulink":
         print("[Grader] Compiling Simulink deployment code...")
         
@@ -276,9 +292,14 @@ def main():
     # 5. Execute Multi-Run Simulation Tests
     test_runs = getattr(test_suite, "TEST_RUNS", [("Standard Run", 1.0, 0.08, 0.08, False)])
     
-    sim_script = os.path.join(repo_root, "tools", "physics_sim.py")
+    sim_script = os.path.join(SOURCE_DIR, "physics_sim.py")
+    if not os.path.exists(sim_script):
+        sim_script = os.path.join(repo_root, "tools", "physics_sim.py")
     if not os.path.exists(sim_script):
         sim_script = os.path.join(os.path.dirname(__file__), "..", "physics_sim.py")
+    if not os.path.exists(sim_script):
+        write_results(0.0, f"System Error: Simulator backend script 'physics_sim.py' not found (looked in {SOURCE_DIR}, {repo_root}/tools).")
+        return
         
     total_score = 0.0
     gradescope_tests = []
@@ -307,7 +328,11 @@ def main():
             except Exception:
                 pass
                 
+<<<<<<< HEAD
         sim_log_path = "simulator_backend.log"
+=======
+        sim_log_path = os.path.join(tempfile.gettempdir(), "simulator_backend.log")
+>>>>>>> ccec4d39a3e4fd3181170c9d5dd707616fc703bb
         if os.path.exists(sim_log_path):
             try:
                 os.remove(sim_log_path)
@@ -327,11 +352,14 @@ def main():
             write_results(0.0, f"System Error: Failed to start simulation backend: {e}")
             return
             
-        # Wait for simulator readiness
+        # Wait for simulator readiness (increased timeout to 20s for slow/cold container boot)
         simulator_ready = False
+        exited_early = False
         start_wait = time.time()
-        while time.time() - start_wait < 8.0:
-            if sim_proc.poll() is not None:
+        while time.time() - start_wait < 20.0:
+            poll_status = sim_proc.poll()
+            if poll_status is not None:
+                exited_early = True
                 break
             if os.path.exists(sim_log_path):
                 try:
@@ -350,7 +378,29 @@ def main():
                 sim_proc.wait(timeout=2.0)
             except Exception:
                 sim_proc.kill()
-            write_results(0.0, f"System Error: Simulator failed to start or bind to port 8000 within timeout.")
+                
+            # Fetch backend log output to show student/convenor what failed
+            log_tail = ""
+            if os.path.exists(sim_log_path):
+                try:
+                    with open(sim_log_path, "r") as f:
+                        lines = f.readlines()
+                        log_tail = "".join(lines[-15:])  # Grab last 15 lines of simulator logs
+                except Exception as log_err:
+                    log_tail = f"Could not read log file: {log_err}"
+            
+            if exited_early:
+                write_results(
+                    0.0,
+                    f"System Error: Simulator backend exited early with code {poll_status}.\n\n"
+                    f"--- Simulator Backend Log (Last 15 lines) ---\n{log_tail}"
+                )
+            else:
+                write_results(
+                    0.0,
+                    f"System Error: Simulator failed to start or bind to port 8000 within 20s timeout.\n\n"
+                    f"--- Simulator Backend Log (Last 15 lines) ---\n{log_tail}"
+                )
             return
             
         # Run Student Client
@@ -366,7 +416,11 @@ def main():
             client_cwd = os.path.dirname(main_file)
         else:
             client_cmd = [client_bin]
+<<<<<<< HEAD
             client_cwd = "."
+=======
+            client_cwd = tempfile.gettempdir()
+>>>>>>> ccec4d39a3e4fd3181170c9d5dd707616fc703bb
             
         try:
             client_proc = subprocess.Popen(

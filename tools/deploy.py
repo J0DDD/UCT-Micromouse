@@ -32,7 +32,11 @@ def find_micropython_drive():
             glob.glob('/Volumes/UCT-MICROMO*') +
             glob.glob('/Volumes/UCT_MICROMO*') +
             glob.glob('/Volumes/UCT-MICROMOUSE*') +
-            glob.glob('/Volumes/PYB*')
+            glob.glob('/Volumes/UCT_MMOUSE*') +
+            glob.glob('/Volumes/UCT-MMOUSE*') +
+            glob.glob('/Volumes/PYB*') +
+            glob.glob('/Volumes/NO NAME*') +
+            glob.glob('/Volumes/NO_NAME*')
         )
     elif sys.platform == 'win32':
         import string
@@ -50,7 +54,7 @@ def find_micropython_drive():
                 )
                 if res:
                     label = volumeNameBuffer.value.upper()
-                    if "UCT-MICRO" in label or "UCT_MICRO" in label or "PYB" in label:
+                    if "UCT-MICRO" in label or "UCT_MICRO" in label or "PYB" in label or "NO NAME" in label or "NO_NAME" in label:
                         drives.append(drive_path)
             bitmask >>= 1
     else:
@@ -60,7 +64,11 @@ def find_micropython_drive():
             glob.glob('/media/*/*UCT_MICROMO*') +
             glob.glob('/run/media/*/*UCT_MICROMO*') +
             glob.glob('/media/*/*PYB*') +
-            glob.glob('/run/media/*/*PYB*')
+            glob.glob('/run/media/*/*PYB*') +
+            glob.glob('/media/*/*NO NAME*') +
+            glob.glob('/media/*/*NO_NAME*') +
+            glob.glob('/run/media/*/*NO NAME*') +
+            glob.glob('/run/media/*/*NO_NAME*')
         )
     return drives[0] if drives else None
 
@@ -426,18 +434,21 @@ if __name__ == "__main__":
             if mpy_port:
                 print(f"    -> Detected MicroPython on {mpy_port}")
                 mpremote_cmd += ["connect", mpy_port]
+            mpy_drive = find_micropython_drive()
+            use_direct_copy = False
             try:
                 subprocess.run(mpremote_cmd + ["exec", "print('Connected!')"], check=True, capture_output=True)
-            except subprocess.CalledProcessError:
-                print("Error: Could not connect to MicroPython board via serial!")
-                print("Hints:")
-                print("  1. Make sure the board is flashed with MicroPython (run this script with -f/--flash first).")
-                print("  2. Check if the USB cable is connected to the main USB OTG port.")
-                print("  3. Make sure the board is powered on.")
-                sys.exit(1)
-            except FileNotFoundError:
-                print("Error: 'mpremote' command/module not found. Please run 'pip install mpremote' or 'pip install -r python/requirements.txt'")
-                sys.exit(1)
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                if mpy_drive:
+                    print(f"Serial connection busy or mpremote failed. Falling back to direct filesystem copy to: {mpy_drive}")
+                    use_direct_copy = True
+                else:
+                    print("Error: Could not connect to MicroPython board via serial!")
+                    print("Hints:")
+                    print("  1. Make sure the board is flashed with MicroPython (run this script with -f/--flash first).")
+                    print("  2. Check if the USB cable is connected to the main USB OTG port.")
+                    print("  3. Make sure the board is powered on.")
+                    sys.exit(1)
                 
             if target_script:
                 print(f"[2/2] Deploying {os.path.basename(target_script)} and bootloader to the mouse...")
@@ -446,11 +457,17 @@ if __name__ == "__main__":
                 boot_script = os.path.join(repo_root, "python", "boot.py")
                 if os.path.exists(boot_script):
                     print("    -> Pushing boot.py (Hybrid Read-Only/Read-Write logic)...")
-                    subprocess.run(mpremote_cmd + ["fs", "cp", boot_script, ":boot.py"], check=True)
+                    if use_direct_copy:
+                        shutil.copy2(boot_script, os.path.join(mpy_drive, "boot.py"))
+                    else:
+                        subprocess.run(mpremote_cmd + ["fs", "cp", boot_script, ":boot.py"], check=True)
                 
                 # Copy the target script as main.py
                 print(f"    -> Pushing {os.path.basename(target_script)} as main.py...")
-                subprocess.run(mpremote_cmd + ["fs", "cp", target_script, ":main.py"], check=True)
+                if use_direct_copy:
+                    shutil.copy2(target_script, os.path.join(mpy_drive, "main.py"))
+                else:
+                    subprocess.run(mpremote_cmd + ["fs", "cp", target_script, ":main.py"], check=True)
                 deployed_count = 1
                 if os.path.exists(boot_script):
                     deployed_count += 1
@@ -473,11 +490,17 @@ if __name__ == "__main__":
                         remote_path = f"{remote_prefix}{item}"
                         if os.path.isdir(local_path):
                             # Create remote folder
-                            subprocess.run(mpremote_cmd + ["fs", "mkdir", f":{remote_path}"], capture_output=True)
+                            if use_direct_copy:
+                                os.makedirs(os.path.join(mpy_drive, remote_path.replace("/", os.sep)), exist_ok=True)
+                            else:
+                                subprocess.run(mpremote_cmd + ["fs", "mkdir", f":{remote_path}"], capture_output=True)
                             upload_dir_recursive(local_path, f"{remote_path}/")
                         else:
                             print(f"    -> Pushing helper {remote_path}...")
-                            subprocess.run(mpremote_cmd + ["fs", "cp", local_path, f":{remote_path}"], check=True)
+                            if use_direct_copy:
+                                shutil.copy2(local_path, os.path.join(mpy_drive, remote_path.replace("/", os.sep)))
+                            else:
+                                subprocess.run(mpremote_cmd + ["fs", "cp", local_path, f":{remote_path}"], check=True)
 
                 upload_dir_recursive(script_dir_path)
             else:
@@ -487,7 +510,10 @@ if __name__ == "__main__":
                 boot_script = os.path.join(repo_root, "python", "boot.py")
                 if os.path.exists(boot_script):
                     print("    -> Pushing boot.py (Hybrid Read-Only/Read-Write logic)...")
-                    subprocess.run(mpremote_cmd + ["fs", "cp", boot_script, ":boot.py"], check=True)
+                    if use_direct_copy:
+                        shutil.copy2(boot_script, os.path.join(mpy_drive, "boot.py"))
+                    else:
+                        subprocess.run(mpremote_cmd + ["fs", "cp", boot_script, ":boot.py"], check=True)
                 
                 # Copy all contents of target_dir directly to the flash root
                 print(f"    -> Syncing directory contents from {target_dir} to root ...")
@@ -504,10 +530,20 @@ if __name__ == "__main__":
                         continue
                         
                     print(f"    -> Pushing {item}...")
-                    subprocess.run(mpremote_cmd + ["fs", "cp", "-r", item_path, f":{item}"], check=True)
+                    if use_direct_copy:
+                        if os.path.isdir(item_path):
+                            dest_path = os.path.join(mpy_drive, item)
+                            if os.path.exists(dest_path):
+                                shutil.rmtree(dest_path)
+                            shutil.copytree(item_path, dest_path)
+                        else:
+                            shutil.copy2(item_path, os.path.join(mpy_drive, item))
+                    else:
+                        subprocess.run(mpremote_cmd + ["fs", "cp", "-r", item_path, f":{item}"], check=True)
                 deployed_count = "all"
                 
             print(f"Successfully deployed {deployed_count} files to the Micromouse.")
-            print("Soft-rebooting the board...")
-            subprocess.run(mpremote_cmd + ["soft-reset"], check=False)
+            if not use_direct_copy:
+                print("Soft-rebooting the board...")
+                subprocess.run(mpremote_cmd + ["soft-reset"], check=False)
             print("Done! The mouse is now running your code.")

@@ -120,6 +120,9 @@ void simulink_ext_cleanup(void) {
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "ws2_32.lib")
+#endif
 #define close closesocket
 #define socket_errno WSAGetLastError()
 #else
@@ -327,8 +330,11 @@ static void sim_poll_socket(void) {
                     if ((p = strstr(temp, "\"ir_fr\":")))  { sscanf(p, "\"ir_fr\":%d", &val); sim_ir_fr = (uint16_t)val; }
                     if ((p = strstr(temp, "\"ir_sl\":")))  { sscanf(p, "\"ir_sl\":%d", &val); sim_ir_sl = (uint16_t)val; }
                     if ((p = strstr(temp, "\"ir_sr\":")))  { sscanf(p, "\"ir_sr\":%d", &val); sim_ir_sr = (uint16_t)val; }
-                    if ((p = strstr(temp, "\"+lenc\":"))) { sscanf(p, "\"+lenc\":%d", &val); sim_lenc = (int32_t)val; }
-                    if ((p = strstr(temp, "\"+renc\":"))) { sscanf(p, "\"+renc\":%d", &val); sim_renc = (int32_t)val; }
+                    if ((p = strstr(temp, "\"lenc\":")))   { sscanf(p, "\"lenc\":%d", &val); sim_lenc = (int32_t)val; }
+                    else if ((p = strstr(temp, "\"+lenc\":"))) { sscanf(p, "\"+lenc\":%d", &val); sim_lenc += (int32_t)val; }
+                    
+                    if ((p = strstr(temp, "\"renc\":")))   { sscanf(p, "\"renc\":%d", &val); sim_renc = (int32_t)val; }
+                    else if ((p = strstr(temp, "\"+renc\":"))) { sscanf(p, "\"+renc\":%d", &val); sim_renc += (int32_t)val; }
                     if ((p = strstr(temp, "\"gyro\":")))   { sscanf(p, "\"gyro\":%lf", &dval); sim_gyro = (float)dval; }
                     if ((p = strstr(temp, "\"v_batt\":"))) { sscanf(p, "\"v_batt\":%lf", &dval); sim_vbatt = (float)dval; }
                     

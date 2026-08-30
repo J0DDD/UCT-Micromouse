@@ -179,7 +179,7 @@ function [trajectory_log, run_status] = run_tcp_autograder(physics_model, max_ti
                     
                     % --- SEND TELEMETRY TO STUDENT ---
                     % We format it as a JSON string just like the C-Kernel
-                    tx_str = sprintf('{"tof_c":%d, "+lenc":%d, "+renc":%d}\r\n', ...
+                    tx_str = sprintf('{"tof_c":%d, "lenc":%d, "renc":%d}\r\n', ...
                                      virtual_tof_c, virtual_lenc, virtual_renc);
                     write(server, tx_str);
                 catch ME_MAIN
