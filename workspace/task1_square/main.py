@@ -30,25 +30,28 @@ GYRO_TARGET_DEG = 90.0 # target turn angle in degrees
 SIDES_TO_TRAVEL = 4  # number of sides to travel
 
 # Encoder Variables
-TICK_DIST_M = (2.0 * math.pi * 0.031) / 8.0 # Distance in metres that mouse travels per encoder tick. Determined by (2*pi*r) / encoder resolution i.e. wheel radius is 31mm and there are 8 ticks per revolution 
-SIDE_TICKS = int(SIDE_LENGTH_M * (1 / TICK_DIST_M)) # number of encoder ticks per side travelled
+# TICK_DIST_M = (2.0 * math.pi * 0.031) / 8.0 # Distance in metres that mouse travels per encoder tick. Determined by (2*pi*r) / encoder resolution i.e. wheel radius is 31mm and there are 8 ticks per revolution 
+# SIDE_TICKS = int(SIDE_LENGTH_M * (1 / TICK_DIST_M)) # number of encoder ticks per side travelled
+TICKS_PER_M     = 5730          # encoder ticks per metre — matches simulator config (tpr=1170, R=0.0325m)
+TICK_DIST_M = 1 / TICKS_PER_M
+SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
 
 # Speed & Drive Tuning
-FWD_SPEED       = 70.0          # forward target speed (0 ... 100 range)
-TURN_SPEED        = 70.0            # in-place turning PWM (each wheel)
+FWD_SPEED       = 70.0      # forward target speed (0 ... 100 range)
+MIN_SPEED       = 50.0      # minimum speed that motor needs to turn at
+MAX_SPEED       = 100.0     # maximum speed that motors can turn at
+TURN_SPEED      = 70.0      # in-place turning PWM (each wheel)
 
 # Controller Gains (PID variables)
-KP_DIST = 3 
-KI_DIST = 2.5
+KP_DIST = 1 
+KI_DIST = 1
 
-KP_HEAD = 1
-KD_HEAD = -1
+KP_HEAD = 5
+KI_HEAD = 1
+KD_HEAD = 1
+KB_HEAD = 1 / KI_HEAD # Kb is a tuning gain and is typically 1/Ki 
 
 # Kalman Filter Constants
-
-# Physical Hardware Calibration (Minimum PWM threshold to get the wheel to actually start spinning, i.e. overcome static friction, etc)
-LEFT_DEADBAND   = 40          # Left motor dead-band threshold
-RIGHT_DEADBAND  = 40          # Right motor dead-band threshold
 
 VERBOSE         = True          # print debug info during run
 
@@ -104,41 +107,55 @@ def calibrate_gyro():
 def update_state(current_dist_m, current_heading_deg, dt_s):
     """Calculates physical position and angle from raw sensors."""
     lenc, renc, gyro_dps = _sensors()
-    
+    # print(f"lenc: {lenc}, renc: {renc}")
+
     # Convert encoders to distance
     avg_ticks = (lenc + renc) / 2.0
     current_dist_m = avg_ticks * TICK_DIST_M
     
-    # Convert gyro to angle
+    # Convert gyro to angle by integrating
     current_heading_deg += gyro_dps * dt_s
     
     return current_dist_m, current_heading_deg, gyro_dps
 
 # ---------------------------------------------------------------------------
-# Controller Logic - PID logic for distance and heading (angle the MM is heading)
+# Controller Logic - PID logic for distance and heading
 # ---------------------------------------------------------------------------
+"""
 def calc_distance_pi(target_m, current_m, dt_s, err_sum):
     error = target_m - current_m
     err_sum += error * dt_s
     base_speed = (KP_DIST * error) + (KI_DIST * err_sum)
     return base_speed, err_sum
-
-def calc_heading_pd(target_deg, current_deg, gyro_dps):
+"""
+    
+def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
     error = target_deg - current_deg
-    # The gyro directly provides the derivative of heading
-    steering_correction = (KP_HEAD * error) - (KD_HEAD * gyro_dps)
-    return steering_correction
+
+    # Calculate the PID correction values
+    P = KP_HEAD * error
+    D = -KD_HEAD * gyro_dps
+
+    correction_raw = P + I + D
+
+    # Back calculation anti-windup pulls the integration term towards a feasible value (so that it does not grow infinitely)
+    correction = max( -(FWD_SPEED - MIN_SPEED) , min( correction_raw, MAX_SPEED - FWD_SPEED)) # Clamps correction 
+    I +=  (KI_HEAD * error * dt_s) + (KB_HEAD * (correction - correction_raw)) 
+
+    steering_correction = P + I + D
+    steering_correction = max( -(FWD_SPEED - MIN_SPEED), min(steering_correction, MAX_SPEED - FWD_SPEED))
+    return steering_correction, I
 
 # ---------------------------------------------------------------------------
 # Combine Error Correction - Correct speed and angle
 # ---------------------------------------------------------------------------
-def apply_motor_mixer(base_speed, steering_correction):
-    l_speed = base_speed + steering_correction
-    r_speed = base_speed - steering_correction
+def apply_motor_correction(steering_correction):
+    l_speed = FWD_SPEED - steering_correction
+    r_speed = FWD_SPEED + steering_correction
     
-    # Clamp to max physical limits (-100 to 100)
-    l_pwm = max(-100, min(100, int(l_speed)))
-    r_pwm = max(-100, min(100, int(r_speed)))
+    # Clamp to max physical limits (50 to 100)
+    l_pwm = max(MIN_SPEED, min(MAX_SPEED, int(l_speed)))
+    r_pwm = max(MIN_SPEED, min(MAX_SPEED, int(r_speed)))
     
     uct_mouse.set_motors(l_pwm, r_pwm)
 
@@ -160,19 +177,18 @@ def drive_straight(distance_m):
     
     current_dist = 0.0
     current_heading = 0.0
-    err_sum = 0.0
+    I_heading = 0.00 # Integral term for heading
     dt_s = 0.010  # 10ms control loop step
     
     while current_dist < target_ticks * TICK_DIST_M:
         # 1. Update state and sensors
         current_dist, current_heading, gyro_dps = update_state(current_dist, current_heading, dt_s)
         
-        # 2. Calculate PI distance and PD heading corrections
-        base_speed, err_sum = calc_distance_pi(distance_m, current_dist, dt_s, err_sum)
-        steering_correction = calc_heading_pd(0.0, current_heading, gyro_dps)
-        
+        # 2. Calculate PID distance and PD heading corrections
+        steering_correction, I_heading = calc_heading_pid(0.0, current_heading, gyro_dps, dt_s, I_heading)
+        # print(f"Current Distance: {current_dist}, Current Heading: {current_heading}, Steering Correction: {steering_correction}")
         # 3. Mix outputs and send to motors
-        apply_motor_mixer(base_speed, steering_correction)
+        apply_motor_correction(steering_correction)
                 
         # 4. Pace loop timing (critical for physical hardware)
         uct_mouse.delay_ms(10)
@@ -215,7 +231,7 @@ def run_square():
                 uct_mouse.set_encoder_polarity(int(lines[2]), int(lines[3]))
     except Exception:
         uct_mouse.set_polarity(-1, -1)
-        uct_mouse.set_encoder_polarity(-1,-1)
+        uct_mouse.set_encoder_polarity(1,1)
 
     print("--- Milestone 1: Run a Square ---")
     print(f"  Encoder target : {SIDE_TICKS} ticks/side  ({1.00 / TICK_DIST_M} ticks/m)")
@@ -239,7 +255,7 @@ def run_square():
         # 1. State current side
         print(f"Side: {side}")
         # 2. Drive forward 1 meter
-        uct_mouse.set_motors(LEFT_DEADBAND, RIGHT_DEADBAND)
+        uct_mouse.set_motors(FWD_SPEED, FWD_SPEED)
         drive_straight(SIDE_LENGTH_M)
         
         # 3. Settle briefly
