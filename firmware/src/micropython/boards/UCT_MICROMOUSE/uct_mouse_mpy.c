@@ -1,6 +1,7 @@
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "micromouse_kernel.h"
+#include "ZD25WQ80C.h"
 
 extern volatile bool mouse_initialized;
 extern void initMicroMouse(void);
@@ -255,6 +256,17 @@ static mp_obj_t mpy_uct_mouse_reboot_dfu(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_reboot_dfu_obj, mpy_uct_mouse_reboot_dfu);
 
+// 7j. uct_mouse.erase_flash() -> none
+static mp_obj_t mpy_uct_mouse_erase_flash(void) {
+    extern ZD25WQ80C_t flash;
+    if (!flash.initialized) {
+        initZD25WQ80C();
+    }
+    ZD25WQ80C_ChipErase();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_erase_flash_obj, mpy_uct_mouse_erase_flash);
+
 // Define module globals table
 static const mp_rom_map_elem_t uct_mouse_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_uct_mouse) },
@@ -270,6 +282,7 @@ static const mp_rom_map_elem_t uct_mouse_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_encoder_polarity),MP_ROM_PTR(&mpy_uct_mouse_set_encoder_polarity_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_line_sensors), MP_ROM_PTR(&mpy_uct_mouse_get_line_sensors_obj) },
     { MP_ROM_QSTR(MP_QSTR_dump_logs),    MP_ROM_PTR(&mpy_uct_mouse_dump_logs_obj) },
+    { MP_ROM_QSTR(MP_QSTR_erase_flash),  MP_ROM_PTR(&mpy_uct_mouse_erase_flash_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_telemetry), MP_ROM_PTR(&mpy_uct_mouse_get_telemetry_obj) },
     { MP_ROM_QSTR(MP_QSTR_log_custom),   MP_ROM_PTR(&mpy_uct_mouse_log_custom_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_ticks_ms), MP_ROM_PTR(&mpy_uct_mouse_get_ticks_ms_obj) },

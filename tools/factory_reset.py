@@ -49,31 +49,42 @@ def main():
     print("and internal FAT filesystem/scripts) and wipe/reflash the STM32 internal flash.")
     print("--------------------------------------------------------------------------------")
 
-    # Step 1: Attempt to erase external SPI flash via C-Kernel command
-    port = args.port or detect_port()
-    if port:
-        print(f"[1/4] Connecting to {port} to request SPI Flash Chip Erase...")
-        try:
-            ser = serial.Serial(port, 115200, timeout=1.0)
-            ser.reset_input_buffer()
-            # Exit raw REPL if locked in MicroPython
-            ser.write(b'\x02')
-            time.sleep(0.1)
-            ser.reset_input_buffer()
-            
-            # Send the C-Kernel JSON erase command
-            print("      Sending command: {\"c\":{\"erase\":1}}")
-            ser.write(b'\r\n{"c":{"erase":1}}\r\n')
-            time.sleep(0.2)
-            ser.close()
-            print("      SPI flash erase requested. Waiting 5s for completion...")
-            time.sleep(5.0)
-        except Exception as e:
-            print(f"      Warning: Could not request SPI flash erase over serial ({e}).")
-            print("      Proceeding with internal flash wipe. (SPI flash can be formatted on next boot).")
+    # Step 1: Attempt to erase external SPI flash via MicroPython REPL or C-Kernel command
+    ports_to_try = [args.port] if args.port else []
+    if not ports_to_try:
+        for p in serial.tools.list_ports.comports():
+            if "ST-Link" in p.description or "STLink" in p.description or (p.vid == 0x0483 and p.pid in (0x374b, 0x3752)) or "usbmodem" in p.device:
+                ports_to_try.append(p.device)
+            elif p.vid == 0xf055 and p.pid == 0x9800:
+                ports_to_try.append(p.device)
+    
+    ports_to_try = list(dict.fromkeys(ports_to_try))
+    if ports_to_try:
+        for port in ports_to_try:
+            print(f"[1/4] Connecting to {port} to request SPI Flash Chip Erase...")
+            try:
+                ser = serial.Serial(port, 115200, timeout=1.0)
+                ser.reset_input_buffer()
+                # 1. Interrupt any running script and exit raw REPL
+                ser.write(b'\x03\x03\x02')
+                time.sleep(0.1)
+                
+                # 2. Try MicroPython REPL erase command
+                ser.write(b'\r\nimport uct_mouse; uct_mouse.erase_flash()\r\n')
+                time.sleep(0.1)
+                
+                # 3. Try C-Kernel JSON erase command
+                ser.write(b'\r\n{"c":{"erase":1}}\r\n')
+                time.sleep(0.2)
+                ser.close()
+                print("      SPI flash erase requested. Waiting 3s for completion...")
+                time.sleep(3.0)
+                print("      SPI flash erase command sent successfully.")
+            except Exception as e:
+                print(f"      Note: Could not send erase on {port} ({e}).")
     else:
-        print("[1/4] Serial port not detected. Skipping SPI flash command.")
-        print("      (Make sure ST-Link is plugged in and mouse is powered ON).")
+        print("[1/4] Serial port not detected. Skipping serial SPI flash command.")
+        print("      (External SPI flash will be formatted by MicroPython on boot).")
 
     # Step 2: Locate st-flash utility
     st_flash_cmd = find_st_flash_cmd()
