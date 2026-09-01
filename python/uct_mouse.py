@@ -338,3 +338,7 @@ def get_ticks_ms():
 def dump_logs():
     """Triggers telemetry log dump over VCP (ignored on PC)."""
     pass
+
+def erase_flash():
+    """Triggers complete external SPI flash erase on physical mouse (ignored on PC)."""
+    pass
