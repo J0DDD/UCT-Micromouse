@@ -27,7 +27,8 @@ import math
 # Shape Tuning
 SIDE_LENGTH_M   = 1.00 # metres per straight
 GYRO_TARGET_DEG = 90.0 # target turn angle in degrees
-SIDES_TO_TRAVEL = 4  # number of sides to travel
+TURN_TOLERANCE  = 1.00 # tolerance allowed in final angular position after turning
+SIDES_TO_TRAVEL = 4    # number of sides to travel
 
 # Encoder Variables
 # TICK_DIST_M = (2.0 * math.pi * 0.031) / 8.0 # Distance in metres that mouse travels per encoder tick. Determined by (2*pi*r) / encoder resolution i.e. wheel radius is 31mm and there are 8 ticks per revolution 
@@ -38,9 +39,8 @@ SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
 
 # Speed & Drive Tuning
 FWD_SPEED       = 85.0      # forward target speed (0 ... 100 range)
-MIN_SPEED       = 50.0      # minimum speed that motor needs to turn at
+MIN_SPEED       = 65.0      # minimum speed that motor needs to turn at
 MAX_SPEED       = 100.0     # maximum speed that motors can turn at
-TURN_SPEED      = 70.0      # in-place turning PWM (each wheel)
 
 # Controller Gains (PID variables)
 KP_DIST = 1 
@@ -51,9 +51,16 @@ KI_HEAD = 1
 KD_HEAD = 0.5
 KB_HEAD = 0.1 # 1 / KI_HEAD # Kb is a tuning gain and is typically 1/Ki 
 
+KP_TURN = 1
+KI_TURN = 0
+KD_TURN = 0
+KB_TURN = 0 # 1 / KI_HEAD # Kb is a tuning gain and is typically 1/Ki 
+
 # Kalman Filter Constants
 
-VERBOSE         = True          # print debug info during run
+# Variables to quickly set if want to do sides or just turn
+TURN = True
+SIDES = False
 
 # ---------------------------------------------------------------------------
 # Sensor Reading Helper Functions - Handles Pre-Filter Sensor Readings
@@ -104,30 +111,42 @@ def calibrate_gyro():
 # ---------------------------------------------------------------------------
 # Sensor Readings Conversion - Updating the current state of the micromouse
 # ---------------------------------------------------------------------------
-def update_state(current_dist_m, current_heading_deg, dt_s, lenc_0, renc_0):
+def update_distance(current_dist_m, lenc_0, renc_0):
     """Calculates physical position and angle from raw sensors."""
-    lenc, renc, gyro_dps = _sensors()
+    lenc, renc, _ = _sensors()
 
     # Subtract the encoder values at the end of the previous state (turning or driving straight)
     lenc -= lenc_0
     renc -= renc_0
 
     # DEBUGGING
-    print(f"lenc: {lenc}, renc: {renc}")
+    # print(f"lenc: {lenc}, renc: {renc}")
     # DEBUGGING
 
     # Convert encoders to distance
     avg_ticks = (lenc + renc) / 2.0
     current_dist_m = avg_ticks * TICK_DIST_M
     
-    # Convert gyro to angle by integrating
-    current_heading_deg += gyro_dps * dt_s
-
     # DEBUGGING
-    #print(f"Current distance: {current_dist_m} m, Current Angle: {current_heading_deg} degrees")
+    #print(f"Current distance: {current_dist_m} m")
     # DEBUGGING
 
-    return current_dist_m, current_heading_deg, gyro_dps
+    return current_dist_m
+
+def update_angle(current_angle_deg, dt_s):
+    """ Calculate the current angular position/heading from the raw sensors"""
+    _, _, gyro_dps = _sensors()
+
+    # Convert gyro reading to angle by integrating
+    current_angle_deg += gyro_dps * dt_s
+
+    # Could potentially calculate in place turning angle from [(right distance) - (left distance)] / wheel separation 
+
+    # DEBUGGING
+    #print(f"Current Angle: {current_heading_deg} degrees")
+    # DEBUGGING
+
+    return current_angle_deg, gyro_dps
 
 # ---------------------------------------------------------------------------
 # Controller Logic - PID logic for distance and heading
@@ -162,16 +181,56 @@ def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
 
     return steering_correction, I
 
+def calc_turning_pid(target_deg, current_deg, gyro_dps, dt_s, I):
+    error = target_deg - current_deg
+
+    # Calculate the PID correction values
+    P = KP_TURN * error
+    D = -KD_TURN * gyro_dps
+
+    correction_raw = P + I + D
+
+    # Back calculation anti-windup pulls the integration term towards a feasible value (so that it does not grow infinitely)
+    correction = max(-MAX_SPEED, min( correction_raw, MAX_SPEED)) # Clamps correction to be within -100 and +100 which allows for the error correction to be negative (i.e. overshoot occured)
+    I +=  (KI_TURN * error * dt_s) + (KB_TURN * (correction - correction_raw)) 
+
+    turning_correction = P + I + D
+    turning_correction = max(-MAX_SPEED, min(turning_correction, MAX_SPEED))
+
+    # DEBUGGING
+    print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
+    # DEBUGGING
+
+    return turning_correction, I
+
 # ---------------------------------------------------------------------------
 # Combine Error Correction - Correct speed and angle
 # ---------------------------------------------------------------------------
-def apply_motor_correction(steering_correction):
+def apply_drive_correction(steering_correction):
     l_speed = FWD_SPEED - steering_correction
     r_speed = FWD_SPEED + steering_correction
     
     # Clamp to max physical limits (50 to 100)
     l_pwm = max(MIN_SPEED, min(MAX_SPEED, int(l_speed)))
     r_pwm = max(MIN_SPEED, min(MAX_SPEED, int(r_speed)))
+    
+    safe_set_motors(l_pwm, r_pwm)
+
+def apply_turn_correction(turning_correction):
+    magnitude = abs(turning_correction)
+    magnitude = max(MIN_SPEED, min(MAX_SPEED, magnitude))
+
+    if (turning_correction < 0):
+        l_pwm = int(magnitude)
+        r_pwm = -int(magnitude)
+    else:
+        l_pwm = -int(magnitude)
+        r_pwm = int(magnitude)
+
+    # DEBUGGING
+    # print(f"Left Speed: {l_pwm}, Right Speed {r_pwm}")
+    # DEBUGGING
+
     
     safe_set_motors(l_pwm, r_pwm)
 
@@ -198,8 +257,9 @@ def drive_straight(distance_m):
     dt_s = 0.010  # 10ms control loop step
     
     while current_dist < target_ticks * TICK_DIST_M:
-        # 1. Update state and sensors
-        current_dist, current_heading, gyro_dps = update_state(current_dist, current_heading, dt_s, lenc_0, renc_0)
+        # 1. Update distance and heading
+        current_dist = update_distance(current_dist, lenc_0, renc_0)
+        current_heading, gyro_dps = update_angle(current_heading, dt_s)
         
         # 2. Calculate PID distance and PD heading corrections
         steering_correction, I_heading = calc_heading_pid(0.0, current_heading, gyro_dps, dt_s, I_heading)
@@ -209,8 +269,8 @@ def drive_straight(distance_m):
         # DEBUGGING
 
         # 3. Mix outputs and send to motors
-        apply_motor_correction(steering_correction)
-                
+        apply_drive_correction(steering_correction)
+        
         # 4. Pace loop timing (critical for physical hardware)
         uct_mouse.delay_ms(10)
         
@@ -221,7 +281,7 @@ def drive_straight(distance_m):
 # Movement primitive: turn 90°
 # ---------------------------------------------------------------------------
 
-def turn_left_90():
+def turn_desired_angle(desired_angle, tolerance_deg=1.0):
     """
     TODO: Implement closed-loop turning control.
     Use the gyroscope Z-axis angular rate (gyro) to integrate heading angle
@@ -229,10 +289,36 @@ def turn_left_90():
     """
     print("Turning 90 degrees left...")
     # Student code here
-    safe_set_motors(-TURN_SPEED, TURN_SPEED)
-    uct_mouse.delay_ms(925)
+    
+    current_angle = 0
+    I_turning = 0       # Integral term for turning
+    dt_s = 0.010
+
+    error = desired_angle - current_angle
+
+    while (abs(error) > tolerance_deg): 
+            # 1. Update angle
+            current_angle, gyro_dps = update_angle(current_angle, dt_s)
+
+            # 2. Update error
+            error = desired_angle - current_angle
+
+            # 3. Calculate PID distance and PD heading corrections
+            turning_correction, I_turning = calc_turning_pid(desired_angle, current_angle, gyro_dps, dt_s, I_turning)
+    
+            # DEBUGGING
+            # print(f"Current Angle: {current_angle}, Turning Correction: {turning_correction}")
+            # DEBUGGING
+    
+            # 4. Mix outputs and send to motors
+            apply_turn_correction(turning_correction)
+                    
+            # 5. Pace loop timing (critical for physical hardware)
+            uct_mouse.delay_ms(10)
+            
+        # Stop motors after reaching distance
+
     safe_set_motors(0, 0)
-    pass
 
 # ---------------------------------------------------------------------------
 # Movement Input - Setting Motor Speed
@@ -281,22 +367,24 @@ def run_square():
         uct_mouse.delay_ms(1000)
 
     for side in range(SIDES_TO_TRAVEL):
-        # 1. State current side
-        print(f"Side: {side}")
-        # 2. Drive forward 1 meter
-        safe_set_motors(FWD_SPEED, FWD_SPEED)
-        drive_straight(SIDE_LENGTH_M)
+        if (SIDES):
+            # 1. State current side
+            print(f"Side: {side}")
+            # 2. Drive forward 1 meter
+            safe_set_motors(FWD_SPEED, FWD_SPEED)
+            drive_straight(SIDE_LENGTH_M)
+            
+            # 3. Settle briefly
+            safe_set_motors(0, 0)
+            uct_mouse.delay_ms(200)
         
-        # 3. Settle briefly
-        safe_set_motors(0, 0)
-        uct_mouse.delay_ms(200)
-        
-        # 4. Turn 90 degrees left
-        turn_left_90()
-        
-        # 5. Settle briefly
-        safe_set_motors(0, 0)
-        uct_mouse.delay_ms(200)
+        if (TURN):
+            # 4. Turn 90 degrees left
+            turn_desired_angle(GYRO_TARGET_DEG, TURN_TOLERANCE)
+            
+            # 5. Settle briefly
+            safe_set_motors(0, 0)
+            uct_mouse.delay_ms(200)
 
     # Final stop
     uct_mouse.delay_ms(2800)  # Stop for at least 3 seconds to trigger autograder evaluation completion
