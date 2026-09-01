@@ -280,10 +280,6 @@ def run_square():
         print("Starting in 1 second...")
         uct_mouse.delay_ms(1000)
 
-    # Initiliase the previous recorded encoder values as 0
-    prev_lenc = 0
-    prev_renc = 0
-
     for side in range(SIDES_TO_TRAVEL):
         # 1. State current side
         print(f"Side: {side}")
