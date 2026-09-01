@@ -104,10 +104,17 @@ def calibrate_gyro():
 # ---------------------------------------------------------------------------
 # Sensor Readings Conversion - Updating the current state of the micromouse
 # ---------------------------------------------------------------------------
-def update_state(current_dist_m, current_heading_deg, dt_s):
+def update_state(current_dist_m, current_heading_deg, dt_s, lenc_0, renc_0):
     """Calculates physical position and angle from raw sensors."""
     lenc, renc, gyro_dps = _sensors()
-    # print(f"lenc: {lenc}, renc: {renc}")
+
+    # Subtract the encoder values at the end of the previous state (turning or driving straight)
+    lenc -= lenc_0
+    renc -= renc_0
+
+    # DEBUGGING
+    print(f"lenc: {lenc}, renc: {renc}")
+    # DEBUGGING
 
     # Convert encoders to distance
     avg_ticks = (lenc + renc) / 2.0
@@ -115,7 +122,11 @@ def update_state(current_dist_m, current_heading_deg, dt_s):
     
     # Convert gyro to angle by integrating
     current_heading_deg += gyro_dps * dt_s
-    
+
+    # DEBUGGING
+    #print(f"Current distance: {current_dist_m} m, Current Angle: {current_heading_deg} degrees")
+    # DEBUGGING
+
     return current_dist_m, current_heading_deg, gyro_dps
 
 # ---------------------------------------------------------------------------
@@ -144,7 +155,11 @@ def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
 
     steering_correction = P + I + D
     steering_correction = max( -(FWD_SPEED - MIN_SPEED), min(steering_correction, MAX_SPEED - FWD_SPEED))
-    print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
+
+    # DEBUGGING
+    # print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
+    # DEBUGGING
+
     return steering_correction, I
 
 # ---------------------------------------------------------------------------
@@ -173,8 +188,9 @@ def drive_straight(distance_m):
     print(f"Driving straight for {distance_m}m...")
     # Student code here
     # Snapshot starting encoder values
-    lenc0, renc0, _ = _sensors()
     target_ticks = int(SIDE_TICKS)
+
+    lenc_0, renc_0, _ = _sensors()
     
     current_dist = 0.0
     current_heading = 0.0
@@ -183,11 +199,15 @@ def drive_straight(distance_m):
     
     while current_dist < target_ticks * TICK_DIST_M:
         # 1. Update state and sensors
-        current_dist, current_heading, gyro_dps = update_state(current_dist, current_heading, dt_s)
+        current_dist, current_heading, gyro_dps = update_state(current_dist, current_heading, dt_s, lenc_0, renc_0)
         
         # 2. Calculate PID distance and PD heading corrections
         steering_correction, I_heading = calc_heading_pid(0.0, current_heading, gyro_dps, dt_s, I_heading)
+
+        # DEBUGGING
         # print(f"Current Distance: {current_dist}, Current Heading: {current_heading}, Steering Correction: {steering_correction}")
+        # DEBUGGING
+
         # 3. Mix outputs and send to motors
         apply_motor_correction(steering_correction)
                 
@@ -210,7 +230,7 @@ def turn_left_90():
     print("Turning 90 degrees left...")
     # Student code here
     safe_set_motors(-TURN_SPEED, TURN_SPEED)
-    uct_mouse.delay_ms(600)
+    uct_mouse.delay_ms(925)
     safe_set_motors(0, 0)
     pass
 
@@ -259,6 +279,10 @@ def run_square():
             uct_mouse.delay_ms(50)
         print("Starting in 1 second...")
         uct_mouse.delay_ms(1000)
+
+    # Initiliase the previous recorded encoder values as 0
+    prev_lenc = 0
+    prev_renc = 0
 
     for side in range(SIDES_TO_TRAVEL):
         # 1. State current side
