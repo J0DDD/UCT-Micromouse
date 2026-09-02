@@ -220,11 +220,7 @@ def main():
             return
 
     # 4. Compilation if Simulink track
-<<<<<<< HEAD
     client_bin = "simulink_client.exe"
-=======
-    client_bin = os.path.join(tempfile.gettempdir(), "simulink_client")
->>>>>>> ccec4d39a3e4fd3181170c9d5dd707616fc703bb
     if track == "simulink":
         print("[Grader] Compiling Simulink deployment code...")
         
@@ -328,11 +324,7 @@ def main():
             except Exception:
                 pass
                 
-<<<<<<< HEAD
         sim_log_path = "simulator_backend.log"
-=======
-        sim_log_path = os.path.join(tempfile.gettempdir(), "simulator_backend.log")
->>>>>>> ccec4d39a3e4fd3181170c9d5dd707616fc703bb
         if os.path.exists(sim_log_path):
             try:
                 os.remove(sim_log_path)
@@ -416,11 +408,7 @@ def main():
             client_cwd = os.path.dirname(main_file)
         else:
             client_cmd = [client_bin]
-<<<<<<< HEAD
             client_cwd = "."
-=======
-            client_cwd = tempfile.gettempdir()
->>>>>>> ccec4d39a3e4fd3181170c9d5dd707616fc703bb
             
         try:
             client_proc = subprocess.Popen(

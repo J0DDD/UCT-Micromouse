@@ -36,7 +36,7 @@ TICK_DIST_M     = 1 / TICKS_PER_M
 SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
 
 # Speed & Drive Tuning
-FWD_SPEED       = 85.0      # forward target speed (0 ... 100 range)
+FWD_SPEED       = 90.0      # forward target speed (0 ... 100 range)
 MIN_SPEED       = 50.0      # minimum speed that motor needs to turn at
 MAX_SPEED       = 100.0     # maximum speed that motors can turn at
 MIN_TURN_SPEED  = 60        # minimum speed for turning
@@ -51,7 +51,7 @@ KI_HEAD = 1
 KD_HEAD = 0.5
 KB_HEAD = 0.1 # 1 / KI # Kb is a tuning gain and is typically 1/Ki 
 
-KP_TURN_ANGLE = 0.4
+KP_TURN_ANGLE = 0.6
 KI_TURN_ANGLE = 0
 KD_TURN_ANGLE = 0.05
 KB_TURN_ANGLE = 0 # 1 / KI # Kb is a tuning gain and is typically 1/Ki
@@ -111,7 +111,7 @@ def update_distance(current_dist_m, lenc_0, renc_0):
     renc -= renc_0
 
     # DEBUGGING
-    print(f"lenc: {lenc}, renc: {renc}")
+    # print(f"lenc: {lenc}, renc: {renc}")
     # DEBUGGING
 
     # Convert encoders to distance

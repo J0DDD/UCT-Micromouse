@@ -1,7 +1,6 @@
 import socket
 import json
 import time
-import serial
 import glob
 import sys
 
@@ -74,6 +73,7 @@ class Micromouse:
 
     def find_serial_port(self):
         """Finds the ST-Link or MicroPython Virtual COM Port cross-platform."""
+        import serial
         import serial.tools.list_ports
         ports = list(serial.tools.list_ports.comports())
         
@@ -112,6 +112,7 @@ class Micromouse:
                 except (ConnectionRefusedError, OSError):
                     time.sleep(0.5)
         elif self.method == 'serial':
+            import serial
             if isinstance(self.port, str) and (self.port.startswith('/') or self.port.startswith('COM') or 'dev' in self.port):
                 port = self.port
             else:

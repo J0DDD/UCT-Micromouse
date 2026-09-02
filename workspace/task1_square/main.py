@@ -46,12 +46,12 @@ TURN_HEADROOM   = 15        # Turn speed headroom
 KP_DIST = 1 
 KI_DIST = 1
 
-KP_HEAD = 20
+KP_HEAD = 25
 KI_HEAD = 1
 KD_HEAD = 0.5
 KB_HEAD = 0.1 # 1 / KI # Kb is a tuning gain and is typically 1/Ki 
 
-KP_TURN_ANGLE = 0.4
+KP_TURN_ANGLE = 0.6
 KI_TURN_ANGLE = 0
 KD_TURN_ANGLE = 0.05
 KB_TURN_ANGLE = 0 # 1 / KI # Kb is a tuning gain and is typically 1/Ki
@@ -111,7 +111,7 @@ def update_distance(current_dist_m, lenc_0, renc_0):
     renc -= renc_0
 
     # DEBUGGING
-    print(f"lenc: {lenc}, renc: {renc}")
+    # print(f"lenc: {lenc}, renc: {renc}")
     # DEBUGGING
 
     # Convert encoders to distance
@@ -177,7 +177,7 @@ def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
     steering_correction = max( -(FWD_SPEED - MIN_SPEED), min(steering_correction, MAX_SPEED - FWD_SPEED))
 
     # DEBUGGING
-    # print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
+    print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
     # DEBUGGING
 
     return steering_correction, I
