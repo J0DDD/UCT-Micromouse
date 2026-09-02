@@ -16,6 +16,7 @@
 
 // Extern hardware handles and init functions from the template
 extern UART_HandleTypeDef huart1;
+extern SPI_HandleTypeDef hspi2;
 extern void initMicroMouse(void);
 extern void MX_DMA_Init(void);
 extern void MX_GPIO_Init(void);
@@ -217,7 +218,29 @@ void board_early_init(void) {
     MX_TIM7_Init();
     
     uart_print("Initializing SPI2 (External Flash)...\n");
+    __HAL_RCC_SPI2_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    // Configure PB13 (SCK), PB14 (MISO), PB15 (MOSI)
+    GPIO_InitTypeDef GPIO_InitStruct_SPI = {0};
+    GPIO_InitStruct_SPI.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+    GPIO_InitStruct_SPI.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct_SPI.Pull = GPIO_PULLUP;
+    GPIO_InitStruct_SPI.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct_SPI.Alternate = GPIO_AF5_SPI2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_SPI);
+
+    // Re-initialize FLASH_CS GPIO Pin (PB12) as output and de-assert it (HIGH)
+    GPIO_InitTypeDef GPIO_InitStruct_CS = {0};
+    GPIO_InitStruct_CS.Pin = FLASH_CS_Pin;
+    GPIO_InitStruct_CS.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct_CS.Pull = GPIO_NOPULL;
+    GPIO_InitStruct_CS.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(FLASH_CS_GPIO_Port, &GPIO_InitStruct_CS);
+    HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
+
     MX_SPI2_Init();
+    __HAL_SPI_ENABLE(&hspi2);
 
     // Initialize OLED display early on boot to show welcome feedback
     uart_print("Initializing Boot OLED Display...\n");
@@ -233,15 +256,15 @@ void board_early_init(void) {
 
     // Configure PB3 (CTRL_LEDS) as GPIO Output Push-Pull and write it HIGH to enable the LED master gate
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    GPIO_InitTypeDef GPIO_InitStruct_LedGate = {0};
-    GPIO_InitStruct_LedGate.Pin = GPIO_PIN_3;
-    GPIO_InitStruct_LedGate.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct_LedGate.Pull = GPIO_NOPULL;
-    GPIO_InitStruct_LedGate.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_LedGate);
+    GPIO_InitTypeDef GPIO_InitStruct_CTRL = {0};
+    GPIO_InitStruct_CTRL.Pin = GPIO_PIN_3;
+    GPIO_InitStruct_CTRL.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct_CTRL.Pull = GPIO_NOPULL;
+    GPIO_InitStruct_CTRL.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_CTRL);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
 
-    // Configure PC13 (LED0), PA4 (LED1), PA5 (LED2) as Outputs and set them HIGH to turn all three onboard LEDs ON at boot
+    // Configure PC13 (LED0), PA4 (LED1), PA5 (LED2) as Outputs
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     GPIO_InitTypeDef GPIO_InitStruct_LEDs = {0};
@@ -252,12 +275,12 @@ void board_early_init(void) {
     // LED0 (PC13)
     GPIO_InitStruct_LEDs.Pin = GPIO_PIN_13;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct_LEDs);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
     // LED1 (PA4) and LED2 (PA5)
     GPIO_InitStruct_LEDs.Pin = GPIO_PIN_4 | GPIO_PIN_5;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct_LEDs);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_RESET);
 
     uart_print("Boot sequence completed successfully.\n");
 }
@@ -313,6 +336,10 @@ void kernel_background_tick(void) {
         // Feed kernel software watchdog
         kernel_watchdog_tick();
     }
+
+    // Check if external SPI flash storage cache needs background flush (non-blocking outside USB IRQ)
+    extern void bdev_check_flush(void);
+    bdev_check_flush();
 
     in_tick = false;
 }

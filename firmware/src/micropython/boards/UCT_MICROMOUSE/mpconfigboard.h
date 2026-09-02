@@ -3,7 +3,7 @@
 #define MICROPY_HW_FLASH_FS_LABEL   "UCT_MMOUSE"
 
 
-#define MICROPY_HW_HAS_SWITCH       (1)
+#define MICROPY_HW_HAS_SWITCH       (0)
 #define MICROPY_HW_HAS_FLASH        (1)
 #define MICROPY_HW_ENABLE_RNG       (1)
 #define MICROPY_HW_ENABLE_RTC       (1)
@@ -37,13 +37,19 @@
 #define MICROPY_HW_I2C2_SCL         (pin_B10)
 #define MICROPY_HW_I2C2_SDA         (pin_B11)
 
+// SPI2 bus (External ZD25WQ80C Flash)
+#define MICROPY_HW_SPI2_NAME        "SPI2"
+#define MICROPY_HW_SPI2_SCK         (pin_B13)
+#define MICROPY_HW_SPI2_MISO        (pin_B14)
+#define MICROPY_HW_SPI2_MOSI        (pin_B15)
+
 // USRSW is SW1 (PE6), active low
 #define MICROPY_HW_USRSW_PIN        (pin_E6)
 #define MICROPY_HW_USRSW_PULL       (GPIO_PULLUP)
 #define MICROPY_HW_USRSW_EXTI_MODE  (GPIO_MODE_IT_FALLING)
 #define MICROPY_HW_USRSW_PRESSED    (0)
 
-// LEDs (PC13, PC14, PC15)
+// LEDs (PC13, PA4, PA5)
 #define MICROPY_HW_LED1             (pin_C13)
 #define MICROPY_HW_LED2             (pin_A4)
 #define MICROPY_HW_LED3             (pin_A5)
@@ -72,6 +78,8 @@ extern const struct _mp_obj_module_t uct_mouse_module;
 
 // Enable external SPI flash custom block device
 #define MICROPY_HW_BDEV_IOCTL(op, arg)          uct_bdev_ioctl(op, arg)
+#define MICROPY_HW_BDEV_READBLOCK(dest, bl)     (uct_bdev_readblocks(dest, bl, 1) == 0)
+#define MICROPY_HW_BDEV_WRITEBLOCK(src, bl)     (uct_bdev_writeblocks(src, bl, 1) == 0)
 #define MICROPY_HW_BDEV_READBLOCKS(dest, bl, n) uct_bdev_readblocks(dest, bl, n)
 #define MICROPY_HW_BDEV_WRITEBLOCKS(src, bl, n) uct_bdev_writeblocks(src, bl, n)
 #define MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE (0)

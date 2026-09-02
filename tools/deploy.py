@@ -433,6 +433,15 @@ if __name__ == "__main__":
             mpremote_cmd = [sys.executable, "-m", "mpremote"]
             if mpy_port:
                 print(f"    -> Detected MicroPython on {mpy_port}")
+                # Send raw interrupt to free REPL if busy
+                try:
+                    import serial
+                    s_int = serial.Serial(mpy_port, 115200, timeout=0.2)
+                    s_int.write(b'\x03\x03')
+                    time.sleep(0.1)
+                    s_int.close()
+                except Exception:
+                    pass
                 mpremote_cmd += ["connect", mpy_port]
             mpy_drive = find_micropython_drive()
             use_direct_copy = False
@@ -458,14 +467,14 @@ if __name__ == "__main__":
                 if os.path.exists(boot_script):
                     print("    -> Pushing boot.py (Hybrid Read-Only/Read-Write logic)...")
                     if use_direct_copy:
-                        shutil.copy2(boot_script, os.path.join(mpy_drive, "boot.py"))
+                        shutil.copyfile(boot_script, os.path.join(mpy_drive, "boot.py"))
                     else:
                         subprocess.run(mpremote_cmd + ["fs", "cp", boot_script, ":boot.py"], check=True)
                 
                 # Copy the target script as main.py
                 print(f"    -> Pushing {os.path.basename(target_script)} as main.py...")
                 if use_direct_copy:
-                    shutil.copy2(target_script, os.path.join(mpy_drive, "main.py"))
+                    shutil.copyfile(target_script, os.path.join(mpy_drive, "main.py"))
                 else:
                     subprocess.run(mpremote_cmd + ["fs", "cp", target_script, ":main.py"], check=True)
                 deployed_count = 1
@@ -477,6 +486,8 @@ if __name__ == "__main__":
                 
                 def upload_dir_recursive(local_dir, remote_prefix=""):
                     for item in os.listdir(local_dir):
+                        if item.startswith('.'):
+                            continue
                         local_path = os.path.join(local_dir, item)
                         name_lower = item.lower()
                         if name_lower in ignore_names or name_lower in {"uct_mouse.py", "micromouse.py", "boot.py"}:
@@ -498,7 +509,7 @@ if __name__ == "__main__":
                         else:
                             print(f"    -> Pushing helper {remote_path}...")
                             if use_direct_copy:
-                                shutil.copy2(local_path, os.path.join(mpy_drive, remote_path.replace("/", os.sep)))
+                                shutil.copyfile(local_path, os.path.join(mpy_drive, remote_path.replace("/", os.sep)))
                             else:
                                 subprocess.run(mpremote_cmd + ["fs", "cp", local_path, f":{remote_path}"], check=True)
 
@@ -511,7 +522,7 @@ if __name__ == "__main__":
                 if os.path.exists(boot_script):
                     print("    -> Pushing boot.py (Hybrid Read-Only/Read-Write logic)...")
                     if use_direct_copy:
-                        shutil.copy2(boot_script, os.path.join(mpy_drive, "boot.py"))
+                        shutil.copyfile(boot_script, os.path.join(mpy_drive, "boot.py"))
                     else:
                         subprocess.run(mpremote_cmd + ["fs", "cp", boot_script, ":boot.py"], check=True)
                 

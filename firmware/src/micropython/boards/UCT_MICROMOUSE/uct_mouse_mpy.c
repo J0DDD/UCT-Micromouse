@@ -72,6 +72,28 @@ static mp_obj_t mpy_uct_mouse_init(void) {
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+    // Enable PB3 master LED gate
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitTypeDef GPIO_InitStruct_Led = {0};
+    GPIO_InitStruct_Led.Pin = GPIO_PIN_3;
+    GPIO_InitStruct_Led.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct_Led.Pull = GPIO_NOPULL;
+    GPIO_InitStruct_Led.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_Led);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
+
+    // Initialize PC13 (LED0)
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    GPIO_InitStruct_Led.Pin = GPIO_PIN_13;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct_Led);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+
+    // Initialize PA4 (LED1) and PA5 (LED2)
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitStruct_Led.Pin = GPIO_PIN_4 | GPIO_PIN_5;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct_Led);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_RESET);
     
     initMicroMouse();
     mouse_initialized = true;

@@ -381,9 +381,15 @@ void kernel_set_oled_line4(const char* text) {
 void kernel_update_display(void) {
     // Limit I2C display updates to 10Hz to eliminate scanline tearing while maintaining responsiveness
     static uint32_t last_display_time = 0;
+    static bool first_run = true;
     uint32_t now = HAL_GetTick();
     if (now - last_display_time < 100) return; 
     last_display_time = now;
+
+    if (first_run) {
+        SSD1306_Fill(SSD1306_COLOR_BLACK);
+        first_run = false;
+    }
 
     // Check if Simulink is providing display data. If so, use it.
     if (g_oled_header[0] != '\0' || g_oled_line1[0] != '\0' || 
@@ -438,22 +444,22 @@ void kernel_update_display(void) {
         }
     }
     
-    // Auto-recover I2C2 bus if it gets stuck in BUSY or ERROR state (due to motor noise)
+    // Auto-recover I2C2 bus only if it gets genuinely stuck in BUSY state for extended time
     extern I2C_HandleTypeDef hi2c2;
     static uint32_t i2c2_busy_ticks = 0;
     if (hi2c2.State == HAL_I2C_STATE_BUSY) {
-        i2c2_busy_ticks++;
+        if (++i2c2_busy_ticks > 50) {
+            i2c2_busy_ticks = 0;
+            extern void restartI2C(I2C_HandleTypeDef *hi2c);
+            restartI2C(&hi2c2);
+            extern uint8_t SSD1306_Init(void);
+            SSD1306_Init();
+        }
     } else {
         i2c2_busy_ticks = 0;
-    }
-
-    if (hi2c2.ErrorCode != HAL_I2C_ERROR_NONE || i2c2_busy_ticks > 20) {
-        i2c2_busy_ticks = 0;
-        extern void restartI2C(I2C_HandleTypeDef *hi2c);
-        restartI2C(&hi2c2);
-        
-        extern uint8_t SSD1306_Init(void);
-        SSD1306_Init();
+        if (hi2c2.State == HAL_I2C_STATE_READY) {
+            hi2c2.ErrorCode = HAL_I2C_ERROR_NONE;
+        }
     }
 
     SSD1306_UpdateScreen();
