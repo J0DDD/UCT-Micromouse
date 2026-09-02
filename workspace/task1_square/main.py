@@ -32,7 +32,7 @@ SIDES_TO_TRAVEL = 4    # number of sides to travel
 
 # Encoder Variables
 TICKS_PER_M     = 5730          # encoder ticks per metre — matches simulator config (tpr=1170, R=0.0325m)
-TICK_DIST_M = 1 / TICKS_PER_M
+TICK_DIST_M     = 1 / TICKS_PER_M
 SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
 
 # Speed & Drive Tuning
@@ -53,14 +53,14 @@ KB_HEAD = 0.1 # 1 / KI # Kb is a tuning gain and is typically 1/Ki
 
 KP_TURN_ANGLE = 0.4
 KI_TURN_ANGLE = 0
-KD_TURN_ANGLE = 0
+KD_TURN_ANGLE = 0.05
 KB_TURN_ANGLE = 0 # 1 / KI # Kb is a tuning gain and is typically 1/Ki
 
 KP_TURN_VEL = 0.02
 
 # Variables to quickly set if want to do sides or just turn
 TURN = True
-SIDES = False
+SIDES = True
 
 # ---------------------------------------------------------------------------
 # Sensor Reading Helper Functions - Handles Pre-Filter Sensor Readings
@@ -311,21 +311,32 @@ def turn_desired_angle(desired_angle, tolerance_deg=1.0):
     current_angle = 0
     prev_lenc, prev_renc, _ = _sensors()
     I_angle = 0       # Integral term for turning
-    dt_s = 0.010
+    last_time = _now_ms() - 50
 
     error = desired_angle - current_angle
 
-    while (abs(error) > tolerance_deg): 
-            current_angle, gyro_dps = update_angle(current_angle, dt_s) # 1. Update angle and wheel speeds
-            error = desired_angle - current_angle                       # 2. Update error
+    while (abs(error) > tolerance_deg):
+            # 1. Calculate time difference between loop iterations
+            if ON_HARDWARE:
+                """now = _now_ms()
+                dt_s = _elapsed_s(last_time, now)
+                last_time = now"""
+                dt_s = 0.09
+            else:
+                # Simulator's internal clock will advance by exactly this value
+                dt_s = 0.010
 
-            # 3. Calculate desired speed
+            # 2. Update the angle, yaw rate and the error
+            current_angle, gyro_dps = update_angle(current_angle, dt_s)
+            error = desired_angle - current_angle                       
+
+            # 3. Calculate desired "speed" (PWM)
             desired_turn_speed, I_angle = calc_angle_pid(desired_angle, current_angle, gyro_dps, dt_s, I_angle)
 
-            # 4. Measure wheel velocities
+            # 4. Measure wheel "velocities" (Rate of change of the encoder values)
             left_vel, right_vel, prev_lenc, prev_renc = update_velocity(prev_lenc, prev_renc, dt_s)
 
-            # 5. Calculate  corrections for Left Wheel Speed
+            # 5. Calculate  the correction needed to balance the wheel speeds
             balance_correction = calc_wheel_balance_pid(left_vel, right_vel)
 
             # 6. Set motor speeds
@@ -334,9 +345,8 @@ def turn_desired_angle(desired_angle, tolerance_deg=1.0):
             # 7. Pace loop timing (critical for physical hardware)
             uct_mouse.delay_ms(10)
 
-
             # DEBUGGING
-            # print(f"Desired Speed: {desired_turn_speed}, Left Vel: {left_vel}, Right Vel: {right_vel}")
+            # print(f"Current Angle: {current_angle}, gyro_dps: {gyro_dps}, dt_s: {dt_s}")
             # DEBUGGING
             
         # Stop motors after reaching distance
@@ -382,7 +392,9 @@ def run_square():
 
     # On physical hardware, wait for user button SW1 (PE6) press before starting
     import sys
-    if sys.platform in ('pyboard', 'stm32'):
+    global ON_HARDWARE
+    ON_HARDWARE = sys.platform in ('pyboard', 'stm32')
+    if ON_HARDWARE:
         print("Press SW1 (User button) on the board to start the run...")
         while uct_mouse.get_button() == 0:
             uct_mouse.delay_ms(50)
