@@ -37,19 +37,16 @@
 #define MICROPY_HW_I2C2_SCL         (pin_B10)
 #define MICROPY_HW_I2C2_SDA         (pin_B11)
 
-// SPI2 bus (External ZD25WQ80C Flash)
-#define MICROPY_HW_SPI2_NAME        "SPI2"
+// SPI buses (SPI2 for External NOR Flash: PB12=CS, PB13=SCK, PB14=MISO, PB15=MOSI)
 #define MICROPY_HW_SPI2_SCK         (pin_B13)
 #define MICROPY_HW_SPI2_MISO        (pin_B14)
 #define MICROPY_HW_SPI2_MOSI        (pin_B15)
 
-// USRSW is SW1 (PE6), active low
-#define MICROPY_HW_USRSW_PIN        (pin_E6)
-#define MICROPY_HW_USRSW_PULL       (GPIO_PULLUP)
-#define MICROPY_HW_USRSW_EXTI_MODE  (GPIO_MODE_IT_FALLING)
-#define MICROPY_HW_USRSW_PRESSED    (0)
+// USRSW disabled from MicroPython core to prevent false factory reset mode during battery boot.
+// Student user button (SW1 on PE6) is handled directly via uct_mouse.get_button().
+#define MICROPY_HW_HAS_SWITCH       (0)
 
-// LEDs (PC13, PA4, PA5)
+// LEDs (PC13, PC14, PC15)
 #define MICROPY_HW_LED1             (pin_C13)
 #define MICROPY_HW_LED2             (pin_A4)
 #define MICROPY_HW_LED3             (pin_A5)

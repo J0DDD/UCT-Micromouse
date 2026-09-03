@@ -135,6 +135,13 @@ def evaluate_run(trajectory_file):
             # Finished square, parked at origin (do not append to Leg 1!)
             turn4_end_heading = ttheta
 
+    # If the run ended during Turn 4 or after stopping without moving forward along a 5th leg,
+    # capture the final heading from the last trajectory point.
+    if turn4_end_heading is None and len(trajectory) > 0:
+        if current_state >= 7 or len(turns_points[3]) > 0:
+            final_theta = trajectory[-1][2]
+            turn4_end_heading = (final_theta + math.pi) % (2.0 * math.pi) - math.pi
+
     # Evaluate the 4 Straight Line Segments (30 points total - 7.5 points per leg)
     leg_scores = []
     feedback.append("\n--- Leg Trajectory Analysis (Straightness & Length) ---")
@@ -179,31 +186,45 @@ def evaluate_run(trajectory_file):
         leg_scores.append(leg_score)
         feedback.append(f"  Leg {i+1} ({['East', 'North', 'West', 'South'][i]}): Length={leg_len:.2f}m (err={len_error*100:.1f}cm), Max Dev={max_dev*100:.1f}cm -> Score {leg_score:.2f}/7.50")
 
+    # Calculate representative straight heading for each of the 4 legs (circular mean)
+    def circular_mean(thetas):
+        sin_sum = sum(math.sin(th) for th in thetas)
+        cos_sum = sum(math.cos(th) for th in thetas)
+        return math.atan2(sin_sum, cos_sum)
+
+    leg_headings = {}
+    for i in range(4):
+        if len(legs_points[i]) > 0:
+            leg_headings[i] = circular_mean([pt[2] for pt in legs_points[i]])
+        else:
+            leg_headings[i] = target_headings[i]
+
     # Evaluate the 4 Turns / Right-Angleness (30 points total - 7.5 points per corner)
     turn_scores = []
     feedback.append("\n--- Corner Analysis (Right-Angleness) ---")
     for i in range(4):
-        pts_current = legs_points[i]
+        if len(legs_points[i]) < 3:
+            feedback.append(f"  Corner {i+1}: Incomplete turn trajectory (missing Leg {i+1}). Scored 0.0/7.5")
+            turn_scores.append(0.0)
+            continue
+            
+        h_start = leg_headings[i]
         
         if i < 3:
-            pts_next = legs_points[i + 1]
-            if not pts_current or not pts_next:
-                feedback.append(f"  Corner {i+1}: Incomplete turn trajectory. Scored 0.0/7.5")
+            if len(legs_points[i + 1]) < 3:
+                feedback.append(f"  Corner {i+1}: Incomplete turn trajectory (missing Leg {i+2}). Scored 0.0/7.5")
                 turn_scores.append(0.0)
                 continue
-            h_start = pts_current[-1][2]
-            h_end = pts_next[0][2]
+            h_end = leg_headings[i + 1]
         else:
-            # Corner 4: Turn from Leg 4 to the final completed heading
-            if not pts_current:
-                feedback.append(f"  Corner {i+1}: Incomplete turn trajectory. Scored 0.0/7.5")
-                turn_scores.append(0.0)
-                continue
-            h_start = pts_current[-1][2]
+            # Corner 4: Turn from Leg 4 to the final completed heading at the origin
             if turn4_end_heading is not None:
                 h_end = turn4_end_heading
             elif turns_points[3]:
                 h_end = turns_points[3][-1][2]
+            elif len(trajectory) > 0:
+                final_theta = trajectory[-1][2]
+                h_end = (final_theta + math.pi) % (2.0 * math.pi) - math.pi
             else:
                 feedback.append(f"  Corner {i+1}: Incomplete turn trajectory. Scored 0.0/7.5")
                 turn_scores.append(0.0)

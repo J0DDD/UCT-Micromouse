@@ -71,6 +71,8 @@ def main():
             # 3. Package all assignments/ folders
             for root, dirs, files in os.walk(assignments_dir):
                 for file in files:
+                    if file.startswith('.') or file.endswith('.pyc') or '__pycache__' in root:
+                        continue
                     full_file_path = os.path.join(root, file)
                     # Compute arcname relative to the autograder folder
                     rel_path = os.path.relpath(full_file_path, script_dir)

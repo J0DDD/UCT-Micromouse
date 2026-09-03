@@ -51,12 +51,26 @@ If you are programmed to run without an ST-Link programmer, you can flash the fi
 
 Once MicroPython is flashed, the board acts as a USB storage drive named **`UCT_MMOUSE`**.
 
-1. Press the black **RESET** button on the processor board.
+1. Press the black **RESET** button on the processor board (or power-cycle the mouse).
 2. Within 2–3 seconds, a new USB flash drive named **`UCT_MMOUSE`** will mount automatically on your desktop.
-3. Open the drive. You will see three default files:
+3. Open the drive. You will see default files:
    * `boot.py`: Configures the USB connection.
-   * `main.py`: The placeholder script that executes when the board boots.
+   * `main.py`: The script that executes automatically when the board boots on battery or USB.
    * `README.txt`: General details about the partition.
+
+### 💾 Flash Filesystem Architecture & Immediate Persistence
+* **Hardware Storage:** Files are stored in a dedicated 128 KB partition on the onboard **SPI NOR Flash** chip (`ZD25WQ80C`).
+* **Direct Synchronous Write-Through:** Whenever a file is written or modified, the low-level driver immediately commits and verifies the physical flash sectors. There is no delayed cache, so files are safe from corruption even if power is switched off immediately.
+* **Auto-Format Protection:** The MicroPython C bootloader is strictly configured never to auto-format the external drive on boot, protecting your code from being wiped across power cycles.
+
+### 🔄 First-Time Setup or Formatting the Drive (Factory Reset)
+If you have a brand-new processor board or if the external flash drive ever becomes unformatted or corrupted, you can format it cleanly with one command:
+
+```bash
+python3 tools/deploy.py --engine micropython --factory-reset
+```
+
+*(Alternatively, from the MicroPython REPL prompt, run `import os, pyb; os.VfsFat.mkfs(pyb.Flash())` to format the partition directly).*
 
 ---
 

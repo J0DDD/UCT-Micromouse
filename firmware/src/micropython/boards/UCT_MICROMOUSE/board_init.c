@@ -16,7 +16,6 @@
 
 // Extern hardware handles and init functions from the template
 extern UART_HandleTypeDef huart1;
-extern SPI_HandleTypeDef hspi2;
 extern void initMicroMouse(void);
 extern void MX_DMA_Init(void);
 extern void MX_GPIO_Init(void);
@@ -218,29 +217,7 @@ void board_early_init(void) {
     MX_TIM7_Init();
     
     uart_print("Initializing SPI2 (External Flash)...\n");
-    __HAL_RCC_SPI2_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    // Configure PB13 (SCK), PB14 (MISO), PB15 (MOSI)
-    GPIO_InitTypeDef GPIO_InitStruct_SPI = {0};
-    GPIO_InitStruct_SPI.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
-    GPIO_InitStruct_SPI.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct_SPI.Pull = GPIO_PULLUP;
-    GPIO_InitStruct_SPI.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct_SPI.Alternate = GPIO_AF5_SPI2;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_SPI);
-
-    // Re-initialize FLASH_CS GPIO Pin (PB12) as output and de-assert it (HIGH)
-    GPIO_InitTypeDef GPIO_InitStruct_CS = {0};
-    GPIO_InitStruct_CS.Pin = FLASH_CS_Pin;
-    GPIO_InitStruct_CS.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct_CS.Pull = GPIO_NOPULL;
-    GPIO_InitStruct_CS.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(FLASH_CS_GPIO_Port, &GPIO_InitStruct_CS);
-    HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
-
     MX_SPI2_Init();
-    __HAL_SPI_ENABLE(&hspi2);
 
     // Initialize OLED display early on boot to show welcome feedback
     uart_print("Initializing Boot OLED Display...\n");
@@ -256,15 +233,15 @@ void board_early_init(void) {
 
     // Configure PB3 (CTRL_LEDS) as GPIO Output Push-Pull and write it HIGH to enable the LED master gate
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    GPIO_InitTypeDef GPIO_InitStruct_CTRL = {0};
-    GPIO_InitStruct_CTRL.Pin = GPIO_PIN_3;
-    GPIO_InitStruct_CTRL.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct_CTRL.Pull = GPIO_NOPULL;
-    GPIO_InitStruct_CTRL.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_CTRL);
+    GPIO_InitTypeDef GPIO_InitStruct_LedGate = {0};
+    GPIO_InitStruct_LedGate.Pin = GPIO_PIN_3;
+    GPIO_InitStruct_LedGate.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct_LedGate.Pull = GPIO_NOPULL;
+    GPIO_InitStruct_LedGate.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct_LedGate);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
 
-    // Configure PC13 (LED0), PA4 (LED1), PA5 (LED2) as Outputs
+    // Configure PC13 (LED0), PA4 (LED1), PA5 (LED2) as Outputs and set them HIGH to turn all three onboard LEDs ON at boot
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     GPIO_InitTypeDef GPIO_InitStruct_LEDs = {0};
@@ -275,12 +252,12 @@ void board_early_init(void) {
     // LED0 (PC13)
     GPIO_InitStruct_LEDs.Pin = GPIO_PIN_13;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct_LEDs);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 
     // LED1 (PA4) and LED2 (PA5)
     GPIO_InitStruct_LEDs.Pin = GPIO_PIN_4 | GPIO_PIN_5;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct_LEDs);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_SET);
 
     uart_print("Boot sequence completed successfully.\n");
 }
@@ -292,8 +269,6 @@ void kernel_background_tick(void) {
         return;
     }
     
-
-
     static bool in_tick = false;
     if (in_tick) {
         return;
@@ -302,11 +277,13 @@ void kernel_background_tick(void) {
 
     static uint32_t last_tick = 0;
     uint32_t now = HAL_GetTick();
-    
-    // Rate limit C-Kernel background task updates to 100 Hz (every 10ms)
-    if (now - last_tick >= 10) {
+    if (now - last_tick >= 10) { // 100 Hz
         last_tick = now;
         
+        // Check deferred flash flush
+        extern void bdev_check_flush(void);
+        bdev_check_flush();
+
         if (mouse_initialized) {
             refreshADCs();
             refreshSWValues();
@@ -315,6 +292,7 @@ void kernel_background_tick(void) {
             refreshINA219Values();
             
             // Snapshot physical state to the C-Kernel state structure
+            extern void kernel_snapshot_state(void);
             kernel_snapshot_state();
 
             // Run C-Kernel telemetry logger at 25 Hz (every 40ms / 4 ticks)
@@ -324,73 +302,30 @@ void kernel_background_tick(void) {
                 extern void kernel_logger_tick(void);
                 kernel_logger_tick();
             }
-            
+
             // Rate-limit OLED display updates to 10 Hz (every 100ms)
             static uint32_t last_display_update = 0;
             if (now - last_display_update >= 100) {
                 last_display_update = now;
                 kernel_update_display();
             }
+
+            serial_interface_tick();
+            kernel_watchdog_tick();
         }
-        
-        // Feed kernel software watchdog
-        kernel_watchdog_tick();
     }
-
-    // Check if external SPI flash storage cache needs background flush (non-blocking outside USB IRQ)
-    extern void bdev_check_flush(void);
-    bdev_check_flush();
-
     in_tick = false;
 }
 
-// Override factory_reset_make_files to write our custom hybrid boot.py and main.py on first-boot filesystem creation.
-// This guarantees the USB drive is read-only by default even before the user deploys any files!
 #include "extmod/vfs_fat.h"
 
-static const char custom_boot_py[] =
-    "# boot.py - UCT Micromouse Hybrid Bootloader\r\n"
-    "try:\r\n"
-    "    import pyb\r\n"
-    "    pyb.usb_mode('VCP+MSC')\r\n"
-    "except Exception as e:\r\n"
-    "    pass\r\n";
-
-static const char custom_main_py[] =
-    "# main.py -- put your code here!\r\n";
-
-static const char custom_readme_txt[] =
-    "UCT Micromouse (UCT_MMOUSE) external SPI flash partition.\r\n"
-    "File storage space: 128 KB (last 128 KB of 1 MB chip).\r\n"
-    "\r\n"
-    "By default, the mouse boots in VCP+MSC mode.\r\n"
-    "This mounts the virtual USB drive on your PC and enables VCP serial telemetry simultaneously.\r\n"
-    "Deploy scripts cleanly over VCP serial using 'python tools/deploy.py -e micropython'.\r\n";
+// Override MicroPython's factory reset hooks to NEVER format or wipe files on boot errors.
+// External SPI flash format is strictly executed via explicit tools/deploy.py or factory_reset.py.
+int factory_reset_create_filesystem(void) {
+    uart_print("MPY: Auto-format disabled. Preserving external SPI flash.\n");
+    return 0;
+}
 
 void factory_reset_make_files(FATFS *fatfs) {
-    struct {
-        const char *name;
-        const char *data;
-    } files[] = {
-        {"boot.py", custom_boot_py},
-        {"main.py", custom_main_py},
-        {"README.txt", custom_readme_txt},
-    };
-    char ram_buf[1024]; // Temporary buffer in RAM to prevent Flash read-during-write conflicts
-    for (size_t i = 0; i < sizeof(files)/sizeof(files[0]); ++i) {
-        FIL fp;
-        FRESULT res = f_open(fatfs, &fp, files[i].name, FA_WRITE | FA_CREATE_ALWAYS);
-        if (res == FR_OK) {
-            UINT n;
-            size_t len = strlen(files[i].data);
-            if (len < sizeof(ram_buf)) {
-                memcpy(ram_buf, files[i].data, len);
-                ram_buf[len] = '\0';
-                f_write(&fp, ram_buf, len, &n);
-            }
-            f_close(&fp);
-        }
-    }
-    extern int ext_flash_flush(void);
-    ext_flash_flush();
+    // No-op: Do not overwrite main.py or existing filesystem files
 }
