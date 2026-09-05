@@ -17,7 +17,7 @@ When issuing a board to a student, or if a student corrupts their board's state,
    * Wipe the external SPI flash chip.
    * Wipe the internal MCU flash.
    * Flash the latest MicroPython binary (`firmware/binaries/micropython.bin`).
-   * Boot the board, auto-format the filesystem partition, and populate the default `boot.py` and `main.py` files.
+   * Boot the board, auto-format the filesystem partition, and populate the default `boot.py`, `main.py`, and `README.txt` files (omitting legacy `pybcdc.inf`).
 
 ---
 

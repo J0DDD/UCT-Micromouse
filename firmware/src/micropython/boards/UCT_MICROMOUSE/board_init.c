@@ -318,14 +318,78 @@ void kernel_background_tick(void) {
 }
 
 #include "extmod/vfs_fat.h"
+#include "factoryreset.h"
 
-// Override MicroPython's factory reset hooks to NEVER format or wipe files on boot errors.
-// External SPI flash format is strictly executed via explicit tools/deploy.py or factory_reset.py.
-int factory_reset_create_filesystem(void) {
-    uart_print("MPY: Auto-format disabled. Preserving external SPI flash.\n");
-    return 0;
-}
+static const char fresh_boot_py[] =
+    "# boot.py -- run on boot to configure USB and filesystem\r\n"
+    "# Put app code in main.py\r\n"
+    "\r\n"
+    "import machine\r\n"
+    "import pyb\r\n"
+    "#pyb.main('main.py') # main script to run after this one\r\n"
+    "#pyb.usb_mode('VCP+MSC') # act as a serial and a storage device\r\n"
+;
+
+static const char fresh_main_py[] =
+    "# main.py -- put your code here!\r\n"
+;
+
+static const char fresh_readme_txt[] =
+    "This is the UCT Micromouse (STM32L476RG).\r\n"
+    "\r\n"
+    "You can get started right away by writing your Python code in 'main.py'.\r\n"
+    "\r\n"
+    "For online docs and resources, please visit:\r\n"
+    "https://uct-micromouse.github.io/\r\n"
+;
+
+typedef struct _factory_file_t {
+    const char *name;
+    size_t len;
+    const char *data;
+} factory_file_t;
+
+static const factory_file_t factory_files[] = {
+    {"boot.py", sizeof(fresh_boot_py) - 1, fresh_boot_py},
+    {"main.py", sizeof(fresh_main_py) - 1, fresh_main_py},
+    {"README.txt", sizeof(fresh_readme_txt) - 1, fresh_readme_txt},
+};
 
 void factory_reset_make_files(FATFS *fatfs) {
-    // No-op: Do not overwrite main.py or existing filesystem files
+    for (size_t i = 0; i < sizeof(factory_files) / sizeof(factory_files[0]); ++i) {
+        const factory_file_t *f = &factory_files[i];
+        FIL fp;
+        FRESULT res = f_open(fatfs, &fp, f->name, FA_WRITE | FA_CREATE_ALWAYS);
+        if (res == FR_OK) {
+            UINT n;
+            f_write(&fp, f->data, f->len, &n);
+            f_close(&fp);
+        }
+    }
 }
+
+// If the flash partition is blank/unformatted, format it as a valid FAT filesystem with default files
+int factory_reset_create_filesystem(void) {
+    uart_print("MPY: Initializing fresh FAT filesystem on external SPI flash...\n");
+    
+    fs_user_mount_t vfs;
+    vfs.blockdev.flags = 0;
+    pyb_flash_init_vfs(&vfs);
+    uint8_t working_buf[512];
+    FRESULT res = f_mkfs(&vfs.fatfs, FM_FAT, 0, working_buf, sizeof(working_buf));
+    if (res != FR_OK) {
+        uart_print("MPY: Failed to create flash filesystem!\n");
+        return -19; // -ENODEV
+    }
+
+    // Set volume label
+    f_setlabel(&vfs.fatfs, MICROPY_HW_FLASH_FS_LABEL);
+
+    // Populate the filesystem with factory default files
+    factory_reset_make_files(&vfs.fatfs);
+
+    uart_print("MPY: Flash filesystem successfully created and populated.\n");
+    return 0; // success
+}
+
+

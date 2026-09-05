@@ -47,6 +47,84 @@ def write_results(score, feedback, test_name="Autograder Evaluation"):
         json.dump(results, f, indent=2)
     print(f"[Grader] Results written to {RESULTS_FILE} with score {score}")
 
+def generate_trajectory_svg(trajectory_file):
+    try:
+        if not trajectory_file or not os.path.exists(trajectory_file):
+            return ""
+        with open(trajectory_file, "r") as f:
+            data = json.load(f)
+        traj = data.get("trajectory", [])
+        if not traj or len(traj) < 2:
+            return ""
+        
+        # Bounding coordinates
+        xs = [pt[0] for pt in traj] + [0.0, 1.0]
+        ys = [pt[1] for pt in traj] + [0.0, 1.0]
+        min_x, max_x = min(xs) - 0.15, max(xs) + 0.15
+        min_y, max_y = min(ys) - 0.15, max(ys) + 0.15
+        span_x = max(max_x - min_x, 0.5)
+        span_y = max(max_y - min_y, 0.5)
+        
+        w, h = 450, 450
+        def to_svg(x, y):
+            sx = (x - min_x) / span_x * (w - 70) + 35
+            sy = h - ((y - min_y) / span_y * (h - 70) + 35)
+            return sx, sy
+        
+        pts = [to_svg(pt[0], pt[1]) for pt in traj]
+        polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        
+        ideal = [to_svg(0,0), to_svg(1,0), to_svg(1,1), to_svg(0,1), to_svg(0,0)]
+        ideal_poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in ideal)
+        
+        start_x, start_y = to_svg(traj[0][0], traj[0][1])
+        end_x, end_y = to_svg(traj[-1][0], traj[-1][1])
+        
+        svg = f'''<div style="margin: 15px 0;">
+  <h4 style="margin-bottom: 8px; color: #fff;">📊 Recorded Trajectory Map:</h4>
+  <svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="background:#181818; border:1px solid #444; border-radius:6px; max-width: 100%; height: auto;">
+    <rect width="100%" height="100%" fill="#181818"/>
+    <!-- Grid Marks -->
+    <line x1="35" y1="15" x2="35" y2="{h-15}" stroke="#2a2a2a" stroke-width="1"/>
+    <line x1="15" y1="{h-35}" x2="{w-15}" y2="{h-35}" stroke="#2a2a2a" stroke-width="1"/>
+    <!-- Ideal Square Reference -->
+    <polyline points="{ideal_poly}" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="5,5"/>
+    <!-- Actual Mouse Trajectory -->
+    <polyline points="{polyline}" fill="none" stroke="#00b4d8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Start & End Markers -->
+    <circle cx="{start_x:.1f}" cy="{start_y:.1f}" r="5" fill="#2ec4b6" stroke="#fff" stroke-width="1.5"/>
+    <circle cx="{end_x:.1f}" cy="{end_y:.1f}" r="5" fill="#e71d36" stroke="#fff" stroke-width="1.5"/>
+    <text x="{start_x+8:.1f}" y="{start_y+4:.1f}" fill="#2ec4b6" font-size="11" font-family="sans-serif" font-weight="bold">Start (0,0)</text>
+    <text x="{end_x+8:.1f}" y="{end_y+4:.1f}" fill="#e71d36" font-size="11" font-family="sans-serif" font-weight="bold">End ({traj[-1][0]:.2f}, {traj[-1][1]:.2f})</text>
+    <!-- Legend -->
+    <text x="45" y="30" fill="#888888" font-size="10" font-family="sans-serif">--- Ideal Square (1m x 1m)</text>
+    <text x="45" y="45" fill="#00b4d8" font-size="10" font-family="sans-serif">── Actual Trajectory</text>
+  </svg>
+</div>'''
+        return svg
+    except Exception:
+        return ""
+
+def get_video_html(video_path):
+    if not video_path or not os.path.exists(video_path):
+        return ""
+    try:
+        size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        if size_mb > 25.0:  # Avoid excessive payload in Gradescope
+            return ""
+        import base64
+        with open(video_path, "rb") as vf:
+            b64_data = base64.b64encode(vf.read()).decode("utf-8")
+        return f'''<div style="margin: 15px 0;">
+  <h4 style="margin-bottom: 8px; color: #fff;">🎬 Simulation Run Playback Video:</h4>
+  <video width="480" height="480" controls autoplay loop muted style="max-width: 100%; height: auto; border: 1px solid #444; border-radius: 6px; background: #000;">
+    <source src="data:video/mp4;base64,{b64_data}" type="video/mp4">
+    Your browser does not support the video tag.
+  </video>
+</div>'''
+    except Exception:
+        return ""
+
 def load_test_suite(assignment_name):
     suite_path = os.path.join(SOURCE_DIR, "assignments", assignment_name, "test_suite.py")
     if not os.path.exists(suite_path):
@@ -60,6 +138,7 @@ def load_test_suite(assignment_name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
 
 def main():
     print("=== UCT Micromouse Gradescope Autograder Runner ===")
@@ -487,30 +566,45 @@ def main():
         
         run_visibility = "after_due_date" if is_hidden else "visible"
         
-        run_report = [
-            f"=== {run_name} ===",
-            f"Weight: {weight*100:.0f}%",
-            f"Raw Score: {run_score:.1f} / 100.0 pts",
-            f"Weighted Score Contribution: {weighted_score:.1f} pts",
-            f"Visibility: {run_visibility.replace('_', ' ').capitalize()}",
-            "-" * 50,
-            run_feedback,
-            ""
-        ]
-        if client_stdout:
-            run_report.append(f"--- Student Output (stdout) ---\n{client_stdout}\n")
-        if client_stderr:
-            run_report.append(f"--- Student Errors (stderr) ---\n{client_stderr}\n")
-        if sim_stdout:
-            run_report.append(f"--- Simulator Output ---\n{sim_stdout}\n")
+        # Generate HTML visualizations
+        svg_html = generate_trajectory_svg(TRAJECTORY_JSON)
+        video_html = get_video_html(VIDEO_PATH) if (idx == 0 and os.path.exists(VIDEO_PATH)) else ""
+        
+        import html
+        escaped_feedback = html.escape(run_feedback)
+        escaped_stdout = html.escape(client_stdout) if client_stdout else ""
+        escaped_stderr = html.escape(client_stderr) if client_stderr else ""
+        escaped_simout = html.escape(sim_stdout) if sim_stdout else ""
+        
+        html_sections = []
+        html_sections.append(f"<h3 style='margin-top:0;'>=== {run_name} ===</h3>")
+        html_sections.append(f"<p><strong>Weight:</strong> {weight*100:.0f}% &nbsp;|&nbsp; <strong>Score:</strong> {run_score:.1f} / 100.0 pts &nbsp;|&nbsp; <strong>Contribution:</strong> {weighted_score:.1f} pts &nbsp;|&nbsp; <strong>Visibility:</strong> {run_visibility.replace('_', ' ').capitalize()}</p>")
+        
+        if svg_html:
+            html_sections.append(svg_html)
+        if video_html:
+            html_sections.append(video_html)
             
-        joined_run_report = "\n".join(run_report)
+        html_sections.append(f"<pre style='background:#1e1e1e; color:#d4d4d4; padding:12px; border-radius:6px; font-family:monospace; font-size:12px; line-height:1.4; overflow-x:auto;'>{escaped_feedback}</pre>")
+        
+        if escaped_stdout:
+            html_sections.append(f"<details style='margin-top:10px;'><summary style='cursor:pointer; font-weight:bold;'>Student Console Output (stdout)</summary><pre style='background:#1e1e1e; color:#d4d4d4; padding:12px; border-radius:6px; font-family:monospace; font-size:12px; margin-top:6px;'>{escaped_stdout}</pre></details>")
+        if escaped_stderr:
+            html_sections.append(f"<details style='margin-top:10px;'><summary style='cursor:pointer; font-weight:bold; color:#ff6b6b;'>Student Error Output (stderr)</summary><pre style='background:#2a1818; color:#ff8080; padding:12px; border-radius:6px; font-family:monospace; font-size:12px; margin-top:6px;'>{escaped_stderr}</pre></details>")
+        if escaped_simout:
+            html_sections.append(f"<details style='margin-top:10px;'><summary style='cursor:pointer; font-weight:bold;'>Simulator Backend Output</summary><pre style='background:#1e1e1e; color:#888; padding:12px; border-radius:6px; font-family:monospace; font-size:12px; margin-top:6px;'>{escaped_simout}</pre></details>")
+            
+        joined_run_html = "".join(html_sections)
+        
+        test_status = "passed" if run_score > 0.0 else "failed"
         
         gradescope_tests.append({
             "name": run_name,
             "score": round(weighted_score, 2),
             "max_score": round(weight * 100.0, 2),
-            "output": joined_run_report,
+            "status": test_status,
+            "output": joined_run_html,
+            "output_format": "html",
             "visibility": run_visibility
         })
         
@@ -523,13 +617,15 @@ def main():
     results = {
         "score": final_score,
         "max_score": 100.0,
-        "output": f"=== Final Grade Summary ===\n  Milestone 1 Combined Score: {final_score:.2f} / 100.0 pts\n==========================",
+        "output": f"<h3 style='margin-top:0;'>Combined Score: {final_score:.2f} / 100.0 pts</h3>",
+        "output_format": "html",
         "visibility": "visible",
         "tests": gradescope_tests
     }
     
     with open(RESULTS_FILE, "w") as f:
         json.dump(results, f, indent=2)
+
         
     print(f"\n[Grader] All test runs finished. Final combined score: {final_score}% written to {RESULTS_FILE}")
 

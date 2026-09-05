@@ -4,34 +4,22 @@ import sys
 import zipfile
 import shutil
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 build_zip.py <assignment_name>")
-        print("Example: python3 build_zip.py milestone1")
-        sys.exit(1)
-        
-    assignment = sys.argv[1].strip().lower()
-    
-    # 1. Setup paths relative to script location
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(os.path.dirname(script_dir))
-    
-    assignments_dir = os.path.join(script_dir, "assignments")
+ALIASES = {
+    "milestone0": "milestone0_verification",
+    "milestone1": "milestone1_square",
+    "milestone2": "milestone2_maze",
+}
+
+def build_single_zip(assignment, script_dir, root_dir, assignments_dir, deploy_dir):
     target_assignment_dir = os.path.join(assignments_dir, assignment)
-    
     if not os.path.exists(target_assignment_dir):
         print(f"[Error] Assignment folder not found: {target_assignment_dir}")
-        print("Please ensure you created the folder and test_suite.py under tools/autograder/assignments/")
-        sys.exit(1)
+        return False
         
     zip_filename = f"{assignment}_autograder.zip"
-    deploy_dir = os.path.join(root_dir, "workspace", "deploy")
-    os.makedirs(deploy_dir, exist_ok=True)
     zip_path = os.path.join(deploy_dir, zip_filename)
+    print(f"\n=== Creating Autograder ZIP: {zip_filename} ===")
     
-    print(f"=== Creating Autograder ZIP: {zip_filename} ===")
-    
-    # List of files/folders to package, mapped to their destination in the ZIP
     files_to_package = [
         # Autograder files
         (os.path.join(script_dir, "setup.sh"), "setup.sh"),
@@ -56,16 +44,15 @@ def main():
             for src_path, arc_name in files_to_package:
                 if not os.path.exists(src_path):
                     print(f"[Error] Required source file does not exist: {src_path}")
-                    sys.exit(1)
+                    return False
                 print(f"Adding: {arc_name}")
-                # Set permissions to ensure run_autograder/setup.sh are executable
                 zinfo = zipfile.ZipInfo(arc_name)
                 zinfo.external_attr = 0o100755 << 16 # unix executable permissions
                 with open(src_path, 'rb') as f:
                     zipf.writestr(zinfo, f.read())
                     
             # 2. Package dynamic active_assignment.txt
-            print("Adding: active_assignment.txt")
+            print(f"Adding: active_assignment.txt -> {assignment}")
             zipf.writestr("active_assignment.txt", assignment)
             
             # 3. Package all assignments/ folders
@@ -74,17 +61,35 @@ def main():
                     if file.startswith('.') or file.endswith('.pyc') or '__pycache__' in root:
                         continue
                     full_file_path = os.path.join(root, file)
-                    # Compute arcname relative to the autograder folder
                     rel_path = os.path.relpath(full_file_path, script_dir)
                     print(f"Adding: {rel_path}")
                     zipf.write(full_file_path, rel_path)
                     
-        print(f"\n[Success] Autograder ZIP created successfully!")
-        print(f"ZIP file: {zip_path}")
-        print("You can upload this ZIP file directly to Gradescope as the autograder configuration.")
+        print(f"[Success] Autograder ZIP created successfully: {zip_path}")
+        return True
     except Exception as e:
         print(f"[Error] Failed to build zip archive: {e}")
-        sys.exit(1)
+        return False
+
+def main():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(os.path.dirname(script_dir))
+    assignments_dir = os.path.join(script_dir, "assignments")
+    deploy_dir = os.path.join(root_dir, "workspace", "deploy")
+    os.makedirs(deploy_dir, exist_ok=True)
+    
+    target_arg = sys.argv[1].strip().lower() if len(sys.argv) > 1 else "all"
+    
+    if target_arg in ["all", "everything"]:
+        targets = ["milestone0_verification", "milestone1_square", "milestone2_maze"]
+    else:
+        resolved = ALIASES.get(target_arg, target_arg)
+        targets = [resolved]
+        
+    for t in targets:
+        build_single_zip(t, script_dir, root_dir, assignments_dir, deploy_dir)
+        
+    print("\nAll target autograder ZIPs built in workspace/deploy/.")
 
 if __name__ == "__main__":
     main()

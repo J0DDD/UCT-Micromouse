@@ -3,13 +3,18 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+# Prevent interactive prompts (e.g. tzdata timezone configuration)
+export DEBIAN_FRONTEND=noninteractive
+export TZ=Etc/UTC
+
 echo "=== Gradescope Autograder Setup Script ==="
 
 # Update package lists
 apt-get update
 
 # Install system dependencies
-apt-get install -y \
+apt-get install -y --no-install-recommends \
+    tzdata \
     python3 \
     python3-pip \
     python3-dev \
