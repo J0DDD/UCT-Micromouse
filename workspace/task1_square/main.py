@@ -22,9 +22,8 @@ import math
 
 # Shape Tuning
 SIDE_LENGTH_M   = 1.00 # metres per straight
-GYRO_TARGET_DEG = 90.0 # target turn angle in degrees
-TURN_TOLERANCE  = 0.50 # tolerance allowed in final angular position after turning
 SIDES_TO_TRAVEL = 4    # number of sides to travel
+GYRO_TARGET_DEG = 90.0 # target turn angle in degrees
 
 # Encoder Variables
 TICKS_PER_M     = 5730          # encoder ticks per metre — matches simulator config (tpr=1170, R=0.0325m)
@@ -33,34 +32,34 @@ SIDE_TICKS      = int(SIDE_LENGTH_M * TICKS_PER_M)
 
 # Angle Calculation variables
 WHEEL_BASE      = 10.5 / 100    # distance between wheels in m
-GYRO_TRUST      = 0.95          # trust in the gyro reading (used to calculate angle using complementary filter)
+# GYRO_TRUST                    # the trust in the gyro is set when deciding hardware vs software
 
 # Speed & Drive Tuning
 FWD_SPEED       = 85.0          # forward target speed (0 ... 100 range)
 MIN_SPEED       = 50.0          # minimum speed that motor needs to turn at
 MAX_SPEED       = 100.0         # maximum speed that motors can turn at
-MIN_TURN_SPEED  = 60            # minimum speed for turning
-TURN_HEADROOM   = 15            # Turn speed headroom 
+MIN_TURN_SPEED  = 50            # minimum speed for turning
+TURN_HEADROOM   = 15            # Turn speed headroom
 
 # Timing constant
 LOOP_DT_MS = 10
 LOOP_DT_S = LOOP_DT_MS / 1000
 
-# Controller Gains (PID variables)
-KP_DIST = 1 
-KI_DIST = 1
-
-KP_HEAD = 25
-KI_HEAD = 0.1
-KD_HEAD = 0.5
+# Feedback Variables
+KP_HEAD = 5
+KI_HEAD = 0
+KD_HEAD = 0
 KB_HEAD = 0 # 1 / KI # Kb is a tuning gain and is typically 1/Ki 
 
-KP_TURN_ANGLE = 0.6
-KI_TURN_ANGLE = 0
-KD_TURN_ANGLE = 0.05
+KP_TURN_ANGLE   = 1.25 # Error will be between 0-90 for majority of the time hence this should be high
+KI_TURN_ANGLE   = 0.5
+KD_TURN_ANGLE   = 0.25
+KB_TURN_ANGLE   = 0.02
+TURN_TOLERANCE  = 1.00 # tolerance allowed in final angular position after turning
+GYRO_TOLERANCE  = 5.0  # speed at which gyro needs to fall under in order to exit loop
 
-KP_TURN_VEL = 0
-KI_TURN_VEL = 1
+KP_TURN_VEL = 0.01
+KI_TURN_VEL = 0
 
 # Variables to quickly set if want to do sides or just turn
 TURN = True
@@ -148,7 +147,7 @@ def update_turn_angle(current_angle_deg, lenc, renc, prev_lenc, prev_renc, gyro_
     current_angle_deg += d_fused
 
     # DEBUGGING
-    # print(f"Current Angle: {current_angle_deg:.3f} degrees")
+    # print(f"Current Angle: {current_angle_deg:.3f}, Gyro DPS: {gyro_dps:.3f}, Gyro: {d_gyro:.3f}, Enc: {d_enc:.3f}, Change: {d_fused:.3f}")
     # DEBUGGING
 
     return current_angle_deg
@@ -169,15 +168,7 @@ def clamp(value, min_out, max_out):
 
 # ---------------------------------------------------------------------------
 # Controller Logic - PID logic for distance and heading
-# ---------------------------------------------------------------------------
-"""
-def calc_distance_pi(target_m, current_m, dt_s, err_sum):
-    error = target_m - current_m
-    err_sum += error * dt_s
-    base_speed = (KP_DIST * error) + (KI_DIST * err_sum)
-    return base_speed, err_sum
-"""
-    
+# --------------------------------------------------------------------------- 
 def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
     error = target_deg - current_deg
 
@@ -194,29 +185,21 @@ def calc_heading_pid(target_deg, current_deg, gyro_dps, dt_s, I):
     steering_correction = P + I + D
     steering_correction = clamp(steering_correction, -(FWD_SPEED - MIN_SPEED), ( MAX_SPEED - FWD_SPEED))
 
-    # DEBUGGING
-    # print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
-    # DEBUGGING
-
     return steering_correction, I
 
-def calc_angle_pid(target_deg, current_deg, gyro_dps, dt_s, I):
-    """ Calculate correction values for the angle for turning. Outputs desired speed for each wheel """
+def calc_angle_pid(target_deg, current_deg, prev_error, dt_s, I):
+    """ Calculate the additional speed needed to be added to the motors when turning. Start out high and go low. Restricted in speed by derivative term"""
     error = target_deg - current_deg
 
     # Calculate the PID correction values
-    P = KP_TURN_ANGLE * error
-    I +=  (KI_TURN_ANGLE * error * dt_s)
-    D = -KD_TURN_ANGLE * gyro_dps
+    P = KP_TURN_ANGLE * abs(error)
+    D = KD_TURN_ANGLE * (error - prev_error) / dt_s
 
-    desired_turn_speed = P + I + D
-    desired_turn_speed = clamp(desired_turn_speed, -MAX_SPEED, MAX_SPEED)
-
-    # DEBUGGING
-    # print(f"Error: {error}, P: {P}, I: {I}, D: {D}")
-    # DEBUGGING
-
-    return desired_turn_speed, I
+    correction_raw = P + I + D
+    additional_speed = clamp(correction_raw, 0, MAX_SPEED)
+    I += (KI_TURN_ANGLE * error * dt_s) + (KB_TURN_ANGLE * (additional_speed - correction_raw))
+ 
+    return additional_speed, error, I
 
 def calc_wheel_balance_pid(left_vel, right_vel, dt_s, I):
     """ Calculate correction values for the angle for turning"""
@@ -229,10 +212,6 @@ def calc_wheel_balance_pid(left_vel, right_vel, dt_s, I):
     I += KI_TURN_VEL * error * dt_s
 
     balance_correction = P + I
-    
-    # DEBUGGING
-    # print(f"Error: {error}, Left: {left_vel}, Right: {right_vel} P: {P}, I: {I}, SUM: {balance_correction}")
-    # DEBUGGING
 
     return balance_correction, I
 
@@ -249,20 +228,18 @@ def apply_drive_correction(steering_correction):
     
     safe_set_motors(l_pwm, r_pwm)
 
-def apply_turn_balance(desired_turn_speed, balance_correction):
-    base_magnitude = abs(desired_turn_speed)
-    base_magnitude = clamp(base_magnitude, (MIN_TURN_SPEED + TURN_HEADROOM), (MAX_SPEED - TURN_HEADROOM))
+def apply_turn_balance(additional_speed, balance_correction, error):
+    base_magnitude = clamp((MIN_TURN_SPEED + additional_speed), (MIN_TURN_SPEED + TURN_HEADROOM), (MAX_SPEED - TURN_HEADROOM))
 
     l_magnitude = clamp(( base_magnitude - balance_correction), MIN_TURN_SPEED, MAX_SPEED)
     r_magnitude = clamp((base_magnitude + balance_correction), MIN_TURN_SPEED, MAX_SPEED)
 
-    if (desired_turn_speed < 0):
+    if (error < 0):
         l_pwm = int(l_magnitude)
         r_pwm = -int(r_magnitude)
     else:
         l_pwm = -int(l_magnitude)
         r_pwm = int(r_magnitude)
-
     
     safe_set_motors(l_pwm, r_pwm)
 
@@ -278,16 +255,14 @@ def drive_straight(distance_m):
     """
     print(f"Driving straight for {distance_m}m...")
     # Student code here
-    # Snapshot starting encoder values
-    target_ticks = int(SIDE_TICKS)
+    target_ticks = int(distance_m * TICKS_PER_M)
 
     lenc_0, renc_0, _ = _sensors()
-    prev_lenc, prev_renc = lenc_0, renc_0
     
-    current_dist = 0.0
+    current_dist    = 0.0
     current_heading = 0.0
-    I_heading = 0.00 # Integral term for heading
-    dt_s = 0.010  # 10ms control loop step
+    I_heading       = 0.00   # Integral term for heading
+    dt_s            = 0.010  # 10ms control loop step
     
     while current_dist < target_ticks * TICK_DIST_M:
         # 1. Get sensor readings
@@ -297,12 +272,8 @@ def drive_straight(distance_m):
         current_dist = update_distance(current_dist, lenc, renc, lenc_0, renc_0)
         current_heading = update_heading(current_heading, gyro_dps, dt_s)
         
-        # 2. Calculate PID distance and PD heading corrections
+        # 2. Calculate correction
         steering_correction, I_heading = calc_heading_pid(0.0, current_heading, gyro_dps, dt_s, I_heading)
-
-        # DEBUGGING
-        # print(f"Current Distance: {current_dist}, Current Heading: {current_heading}, Steering Correction: {steering_correction}")
-        # DEBUGGING
 
         # 3. Mix outputs and send to motors
         apply_drive_correction(steering_correction)
@@ -333,17 +304,17 @@ def turn_desired_angle(desired_angle, tolerance_deg=1.0):
     dt_s = LOOP_DT_S
 
     error = desired_angle - current_angle
+    prev_error = error
 
-    while (abs(error) > tolerance_deg):
+    while (abs(error) > tolerance_deg) or (abs(gyro_dps) > GYRO_TOLERANCE):
             # 1. Get sensor readings
             lenc, renc, gyro_dps = _sensors()
 
-            # 2. Update the angle, yaw rate and the error
-            current_angle = update_turn_angle(current_angle, lenc, renc, prev_lenc, prev_renc, gyro_dps, dt_s)
-            error = desired_angle - current_angle                       
+            # 2. Update the angle
+            current_angle = update_turn_angle(current_angle, lenc, renc, prev_lenc, prev_renc, gyro_dps, dt_s)                     
 
             # 3. Calculate desired "speed" (PWM)
-            desired_turn_speed, I_angle = calc_angle_pid(desired_angle, current_angle, gyro_dps, dt_s, I_angle)
+            additonal_speed, error, I_angle = calc_angle_pid(desired_angle, current_angle, prev_error, dt_s, I_angle)
 
             # 4. Measure wheel "velocities" (Rate of change of the encoder values)
             left_vel, right_vel = update_velocity(lenc, renc, prev_lenc, prev_renc, dt_s)
@@ -352,19 +323,16 @@ def turn_desired_angle(desired_angle, tolerance_deg=1.0):
             balance_correction, I_wheel_balance = calc_wheel_balance_pid(left_vel, right_vel, dt_s, I_wheel_balance)
 
             # 6. Set motor speeds
-            apply_turn_balance(desired_turn_speed, balance_correction)
+            apply_turn_balance(additonal_speed, balance_correction, error)
 
             # 7. Set the current encoder counts as the previous to be used in the next loop iteration
             # Must be set before delay_ms()
             prev_lenc, prev_renc = lenc, renc
+            prev_error = error
             
             # 8. Pace loop timing (critical for physical hardware)
             uct_mouse.delay_ms(10)
 
-            # DEBUGGING
-            # print(f"Current Angle: {current_angle}, gyro_dps: {gyro_dps}, dt_s: {dt_s}")
-            # DEBUGGING
-            
         # Stop motors after reaching distance
 
     safe_set_motors(0, 0)
@@ -409,13 +377,20 @@ def run_square():
     # On physical hardware, wait for user button SW1 (PE6) press before starting
     import sys
     global ON_HARDWARE
+    global GYRO_TRUST
     ON_HARDWARE = sys.platform in ('pyboard', 'stm32')
     if ON_HARDWARE:
+        # The gyro is quite noisy on the micromouse hence the trust level decreases
+        GYRO_TRUST = 0.25
+
         print("Press SW1 (User button) on the board to start the run...")
         while uct_mouse.get_button() == 0:
             uct_mouse.delay_ms(50)
         print("Starting in 1 second...")
         uct_mouse.delay_ms(1000)
+    else:
+        # The gyro is very accurate on the simulator therefore the trust level increases
+        GYRO_TRUST = 0.90
 
     for side in range(SIDES_TO_TRAVEL):
         if (SIDES):
@@ -435,9 +410,13 @@ def run_square():
             
             # 5. Settle briefly
             safe_set_motors(0, 0)
-            uct_mouse.delay_ms(200)
+            uct_mouse.delay_ms(500)
+        if ON_HARDWARE:
+            calibrate_gyro()
 
     # Final stop
+    if not ON_HARDWARE:
+        drive_straight(0.005)
     uct_mouse.delay_ms(2800)  # Stop for at least 3 seconds to trigger autograder evaluation completion
     print()
     print("=== Milestone 1 Complete! ===")
