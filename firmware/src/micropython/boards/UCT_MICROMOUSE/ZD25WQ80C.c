@@ -30,33 +30,16 @@ static inline void cs_assert(void)
 
 static inline void cs_deassert(void)
 {
-    uint32_t timeout = 50000;
-    while ((flash.spi->Instance->SR & SPI_SR_BSY) && --timeout);
     HAL_GPIO_WritePin(flash.cs_port, flash.cs_pin, GPIO_PIN_SET);
 }
 
-static inline uint8_t spi_transfer_byte(uint8_t tx)
-{
-    if (!(flash.spi->Instance->CR1 & SPI_CR1_SPE)) {
-        __HAL_SPI_ENABLE(flash.spi);
-    }
-    uint32_t timeout = 50000;
-    while (!(flash.spi->Instance->SR & SPI_SR_TXE) && --timeout);
-    *(volatile uint8_t *)&flash.spi->Instance->DR = tx;
-    timeout = 50000;
-    while (!(flash.spi->Instance->SR & SPI_SR_RXNE) && --timeout);
-    return *(volatile uint8_t *)&flash.spi->Instance->DR;
-}
-
-/* --------------------------------------------------------------------------
- * Internal helpers
- * -------------------------------------------------------------------------- */
-
 static uint8_t read_status_reg1(void)
 {
+    uint8_t cmd = ZD25WQ80C_CMD_RDSR1;
+    uint8_t sr  = 0;
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RDSR1);
-    uint8_t sr = spi_transfer_byte(0x00);
+    HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
+    HAL_SPI_Receive(flash.spi, &sr, 1, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
     return sr;
 }
@@ -64,20 +47,23 @@ static uint8_t read_status_reg1(void)
 /* Blocks until WIP is cleared. Returns HAL_TIMEOUT if the device never clears. */
 static HAL_StatusTypeDef wait_for_ready(uint32_t timeout_ms)
 {
-    for (volatile uint32_t loop = 0; loop < timeout_ms * 5000; loop++)
+    uint32_t start = HAL_GetTick();
+    volatile uint32_t loop_count = 100000;
+    while (read_status_reg1() & ZD25WQ80C_SR1_WIP)
     {
-        if (!(read_status_reg1() & ZD25WQ80C_SR1_WIP))
-            return HAL_OK;
+        if (--loop_count == 0 || (HAL_GetTick() - start) >= timeout_ms)
+            return HAL_TIMEOUT;
     }
-    return HAL_TIMEOUT;
+    return HAL_OK;
 }
 
 static HAL_StatusTypeDef write_enable(void)
 {
+    uint8_t cmd = ZD25WQ80C_CMD_WREN;
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_WREN);
+    HAL_StatusTypeDef ret = HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
-    return HAL_OK;
+    return ret;
 }
 
 /* --------------------------------------------------------------------------
@@ -91,31 +77,27 @@ static HAL_StatusTypeDef write_enable(void)
  */
 uint8_t initZD25WQ80C(void)
 {
-    /* Ensure SPI peripheral is enabled */
-    __HAL_SPI_ENABLE(flash.spi);
-
     /* Drive CS high before any transaction */
     cs_deassert();
 
-    /* Release from deep power-down / allow tVSL (power-on setup time) */
+    /* Release from deep power-down in case the device was left powered but
+       sleeping from a previous session. The RDP command issues a dummy byte
+       sequence; tRES1 = 3 µs so a HAL_Delay(1) is sufficient. */
     ZD25WQ80C_WakeUp();
-    for (volatile int d = 0; d < 50000; d++) { __NOP(); }
+    HAL_Delay(1);
 
-    uint8_t mfr = 0, id_h = 0, id_l = 0;
-    for (int retry = 0; retry < 15; retry++) {
-        if (ZD25WQ80C_ReadJEDECID(&mfr, &id_h, &id_l)) {
-            if (mfr == ZD25WQ80C_MANUFACTURER_ID &&
-                id_h == ZD25WQ80C_JEDEC_ID_HIGH  &&
-                id_l == ZD25WQ80C_JEDEC_ID_LOW) {
-                flash.initialized = 1;
-                refreshZD25WQ80CValues();
-                return 1;
-            }
-        }
-        for (volatile int d = 0; d < 20000; d++) { __NOP(); }
-    }
+    uint8_t mfr, id_h, id_l;
+    if (!ZD25WQ80C_ReadJEDECID(&mfr, &id_h, &id_l))
+        return 0;
 
-    return 0;
+    if (mfr != ZD25WQ80C_MANUFACTURER_ID ||
+        id_h != ZD25WQ80C_JEDEC_ID_HIGH  ||
+        id_l != ZD25WQ80C_JEDEC_ID_LOW)
+        return 0;
+
+    flash.initialized = 1;
+    refreshZD25WQ80CValues();
+    return 1;
 }
 
 /**
@@ -123,15 +105,22 @@ uint8_t initZD25WQ80C(void)
  */
 void refreshZD25WQ80CValues(void)
 {
-    cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RDSR1);
-    flash.status_reg1 = spi_transfer_byte(0x00);
-    cs_deassert();
+    uint8_t cmd;
+    uint8_t sr;
 
+    cmd = ZD25WQ80C_CMD_RDSR1;
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RDSR2);
-    flash.status_reg2 = spi_transfer_byte(0x00);
+    HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
+    HAL_SPI_Receive(flash.spi, &sr, 1, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
+    flash.status_reg1 = sr;
+
+    cmd = ZD25WQ80C_CMD_RDSR2;
+    cs_assert();
+    HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
+    HAL_SPI_Receive(flash.spi, &sr, 1, ZD25WQ80C_SPI_TIMEOUT);
+    cs_deassert();
+    flash.status_reg2 = sr;
 }
 
 /* --------------------------------------------------------------------------
@@ -148,12 +137,21 @@ void refreshZD25WQ80CValues(void)
  */
 uint8_t ZD25WQ80C_ReadJEDECID(uint8_t *mfr, uint8_t *id_high, uint8_t *id_low)
 {
+    uint8_t cmd  = ZD25WQ80C_CMD_RDID;
+    uint8_t resp[3] = {0};
+
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RDID);
-    *mfr     = spi_transfer_byte(0x00);
-    *id_high = spi_transfer_byte(0x00);
-    *id_low  = spi_transfer_byte(0x00);
+    HAL_StatusTypeDef ret = HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
+    if (ret == HAL_OK)
+        ret = HAL_SPI_Receive(flash.spi, resp, 3, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
+
+    if (ret != HAL_OK)
+        return 0;
+
+    *mfr     = resp[0];
+    *id_high = resp[1];
+    *id_low  = resp[2];
     return 1;
 }
 
@@ -162,12 +160,13 @@ uint8_t ZD25WQ80C_ReadJEDECID(uint8_t *mfr, uint8_t *id_high, uint8_t *id_low)
  * -------------------------------------------------------------------------- */
 
 /**
- * @brief  Put the device into Deep Power Down.
+ * @brief  Enter Deep Power Down mode (~1 µA typical standby current).
  */
-void ZD25WQ80C_PowerDown(void)
+void ZD25WQ80C_DeepPowerDown(void)
 {
+    uint8_t cmd = ZD25WQ80C_CMD_DP;
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_DP);
+    HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
     flash.initialized = 0;
 }
@@ -177,11 +176,9 @@ void ZD25WQ80C_PowerDown(void)
  */
 void ZD25WQ80C_WakeUp(void)
 {
+    uint8_t buf[4] = {ZD25WQ80C_CMD_RDP, 0xFF, 0xFF, 0xFF};
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RDP);
-    spi_transfer_byte(0xFF);
-    spi_transfer_byte(0xFF);
-    spi_transfer_byte(0xFF);
+    HAL_SPI_Transmit(flash.spi, buf, 4, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
 }
 
@@ -190,12 +187,16 @@ void ZD25WQ80C_WakeUp(void)
  */
 void ZD25WQ80C_SoftwareReset(void)
 {
+    uint8_t cmd;
+
+    cmd = ZD25WQ80C_CMD_RSTEN;
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RSTEN);
+    HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
 
+    cmd = ZD25WQ80C_CMD_RST;
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_RST);
+    HAL_SPI_Transmit(flash.spi, &cmd, 1, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
 
     flash.initialized = 0;
@@ -206,24 +207,27 @@ void ZD25WQ80C_SoftwareReset(void)
  * -------------------------------------------------------------------------- */
 
 /**
- * @brief  Read a block of data from any 24-bit address.
- * @param  address  24-bit byte address.
+ * @brief  Read data at up to 33 MHz (standard READ command, no dummy byte).
+ * @param  address  24-bit byte address within the 1 MB address space.
  * @param  buf      Destination buffer.
  * @param  len      Number of bytes to read.
  * @retval HAL_OK on success.
  */
 HAL_StatusTypeDef ZD25WQ80C_Read(uint32_t address, uint8_t *buf, uint32_t len)
 {
+    uint8_t cmd[4] = {
+        ZD25WQ80C_CMD_READ,
+        (uint8_t)(address >> 16),
+        (uint8_t)(address >> 8),
+        (uint8_t)(address),
+    };
+
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_READ);
-    spi_transfer_byte((uint8_t)(address >> 16));
-    spi_transfer_byte((uint8_t)(address >> 8));
-    spi_transfer_byte((uint8_t)(address));
-    for (uint32_t i = 0; i < len; i++) {
-        buf[i] = spi_transfer_byte(0x00);
-    }
+    HAL_StatusTypeDef ret = HAL_SPI_Transmit(flash.spi, cmd, 4, ZD25WQ80C_SPI_TIMEOUT);
+    if (ret == HAL_OK)
+        ret = HAL_SPI_Receive(flash.spi, buf, len, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
-    return HAL_OK;
+    return ret;
 }
 
 /**
@@ -235,17 +239,20 @@ HAL_StatusTypeDef ZD25WQ80C_Read(uint32_t address, uint8_t *buf, uint32_t len)
  */
 HAL_StatusTypeDef ZD25WQ80C_FastRead(uint32_t address, uint8_t *buf, uint32_t len)
 {
+    uint8_t cmd[5] = {
+        ZD25WQ80C_CMD_FAST_READ,
+        (uint8_t)(address >> 16),
+        (uint8_t)(address >> 8),
+        (uint8_t)(address),
+        0xFF,   /* dummy byte */
+    };
+
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_FAST_READ);
-    spi_transfer_byte((uint8_t)(address >> 16));
-    spi_transfer_byte((uint8_t)(address >> 8));
-    spi_transfer_byte((uint8_t)(address));
-    spi_transfer_byte(0xFF); // dummy byte
-    for (uint32_t i = 0; i < len; i++) {
-        buf[i] = spi_transfer_byte(0x00);
-    }
+    HAL_StatusTypeDef ret = HAL_SPI_Transmit(flash.spi, cmd, 5, ZD25WQ80C_SPI_TIMEOUT);
+    if (ret == HAL_OK)
+        ret = HAL_SPI_Receive(flash.spi, buf, len, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
-    return HAL_OK;
+    return ret;
 }
 
 /* --------------------------------------------------------------------------
@@ -262,20 +269,30 @@ HAL_StatusTypeDef ZD25WQ80C_FastRead(uint32_t address, uint8_t *buf, uint32_t le
  */
 HAL_StatusTypeDef ZD25WQ80C_PageProgram(uint32_t address, const uint8_t *buf, uint16_t len)
 {
-    write_enable();
+    HAL_StatusTypeDef ret;
+
+    ret = write_enable();
+    if (ret != HAL_OK)
+        return ret;
+
+    uint8_t cmd[4] = {
+        ZD25WQ80C_CMD_PP,
+        (uint8_t)(address >> 16),
+        (uint8_t)(address >> 8),
+        (uint8_t)(address),
+    };
 
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_PP);
-    spi_transfer_byte((uint8_t)(address >> 16));
-    spi_transfer_byte((uint8_t)(address >> 8));
-    spi_transfer_byte((uint8_t)(address));
-    for (uint16_t i = 0; i < len; i++) {
-        spi_transfer_byte(buf[i]);
-    }
+    ret = HAL_SPI_Transmit(flash.spi, cmd, 4, ZD25WQ80C_SPI_TIMEOUT);
+    if (ret == HAL_OK)
+        ret = HAL_SPI_Transmit(flash.spi, (uint8_t *)buf, len, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
 
+    if (ret != HAL_OK)
+        return ret;
+
     /* tPP typical 0.5 ms, max 3 ms */
-    return wait_for_ready(50);
+    return wait_for_ready(10);
 }
 
 /* --------------------------------------------------------------------------
@@ -289,34 +306,52 @@ HAL_StatusTypeDef ZD25WQ80C_PageProgram(uint32_t address, const uint8_t *buf, ui
  */
 HAL_StatusTypeDef ZD25WQ80C_SectorErase(uint32_t address)
 {
-    write_enable();
+    HAL_StatusTypeDef ret = write_enable();
+    if (ret != HAL_OK)
+        return ret;
+
+    uint8_t cmd[4] = {
+        ZD25WQ80C_CMD_SE,
+        (uint8_t)(address >> 16),
+        (uint8_t)(address >> 8),
+        (uint8_t)(address),
+    };
 
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_SE);
-    spi_transfer_byte((uint8_t)(address >> 16));
-    spi_transfer_byte((uint8_t)(address >> 8));
-    spi_transfer_byte((uint8_t)(address));
+    ret = HAL_SPI_Transmit(flash.spi, cmd, 4, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
 
-    /* tSE typical 45 ms, max 300 ms */
+    if (ret != HAL_OK)
+        return ret;
+
+    /* tSE typical 60 ms, max 400 ms */
     return wait_for_ready(500);
 }
 
 /**
- * @brief  Erase a 32 KB block.
- * @param  address  Any address within the target block.
+ * @brief  Erase a 32 KB half-block.
+ * @param  address  Any address within the target half-block.
  * @retval HAL_OK on success.
  */
-HAL_StatusTypeDef ZD25WQ80C_BlockErase32K(uint32_t address)
+HAL_StatusTypeDef ZD25WQ80C_HalfBlockErase(uint32_t address)
 {
-    write_enable();
+    HAL_StatusTypeDef ret = write_enable();
+    if (ret != HAL_OK)
+        return ret;
+
+    uint8_t cmd[4] = {
+        ZD25WQ80C_CMD_HBE,
+        (uint8_t)(address >> 16),
+        (uint8_t)(address >> 8),
+        (uint8_t)(address),
+    };
 
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_HBE);
-    spi_transfer_byte((uint8_t)(address >> 16));
-    spi_transfer_byte((uint8_t)(address >> 8));
-    spi_transfer_byte((uint8_t)(address));
+    ret = HAL_SPI_Transmit(flash.spi, cmd, 4, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
+
+    if (ret != HAL_OK)
+        return ret;
 
     /* tHBE typical 120 ms, max 800 ms */
     return wait_for_ready(1000);
@@ -329,16 +364,25 @@ HAL_StatusTypeDef ZD25WQ80C_BlockErase32K(uint32_t address)
  */
 HAL_StatusTypeDef ZD25WQ80C_BlockErase(uint32_t address)
 {
-    write_enable();
+    HAL_StatusTypeDef ret = write_enable();
+    if (ret != HAL_OK)
+        return ret;
+
+    uint8_t cmd[4] = {
+        ZD25WQ80C_CMD_BE,
+        (uint8_t)(address >> 16),
+        (uint8_t)(address >> 8),
+        (uint8_t)(address),
+    };
 
     cs_assert();
-    spi_transfer_byte(ZD25WQ80C_CMD_BE);
-    spi_transfer_byte((uint8_t)(address >> 16));
-    spi_transfer_byte((uint8_t)(address >> 8));
-    spi_transfer_byte((uint8_t)(address));
+    ret = HAL_SPI_Transmit(flash.spi, cmd, 4, ZD25WQ80C_SPI_TIMEOUT);
     cs_deassert();
 
-    /* tBE typical 150 ms, max 1000 ms */
+    if (ret != HAL_OK)
+        return ret;
+
+    /* tBE typical 150 ms, max 1 s */
     return wait_for_ready(1200);
 }
 

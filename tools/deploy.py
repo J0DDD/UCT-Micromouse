@@ -113,7 +113,13 @@ def find_stm32_programmer_cli():
                 return os.path.abspath(matches[0])
         except Exception:
             pass
-    return None
+def is_dfu_device_connected(dfu_util_cmd):
+    """Checks if an STM32 DFU device is currently connected."""
+    try:
+        res = subprocess.run([dfu_util_cmd, "-l"], capture_output=True, text=True)
+        return "0483:df11" in res.stdout
+    except Exception:
+        return False
 
 def flash_firmware(central_bin_path):
     """Flashes the firmware binary onto the board.

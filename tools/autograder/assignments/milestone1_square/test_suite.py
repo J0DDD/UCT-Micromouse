@@ -40,8 +40,17 @@ def evaluate_run(trajectory_file):
         return 0.0, "Trajectory data incomplete or too short to analyze."
 
     # Segment the trajectory chronologically into 4 straight legs and 4 turns
-    # The mouse transitions orientation CCW: Leg 0 (0 rad) -> Turn 0 -> Leg 1 (pi/2) -> Turn 1 -> Leg 2 (pi) -> Turn 2 -> Leg 3 (-pi/2) -> Turn 3 -> Stop
-    target_headings = [0.0, math.pi / 2.0, math.pi, -math.pi / 2.0]
+    # Uses unwrapped continuous heading to eliminate [pi, -pi] wraparound ambiguity during Turn 4
+    raw_thetas = [pt[2] for pt in trajectory]
+    unwrapped = np.unwrap(raw_thetas)
+    
+    # Detect turn direction: positive unwrapped change = CCW, negative = CW
+    final_angle_change = unwrapped[-1] - unwrapped[0]
+    direction_sign = 1.0
+    if final_angle_change < -math.pi / 2.0:
+        direction_sign = -1.0
+        
+    angles = (unwrapped - unwrapped[0]) * direction_sign
     
     legs_points = {0: [], 1: [], 2: [], 3: []}
     turns_points = {0: [], 1: [], 2: [], 3: []}
@@ -50,97 +59,75 @@ def evaluate_run(trajectory_file):
     current_state = 0
     turn4_end_heading = None
     
-    for pt in trajectory:
-        tx, ty, ttheta = pt[0], pt[1], pt[2]
-        # Wrap theta to [-pi, pi]
-        ttheta = (ttheta + math.pi) % (2.0 * math.pi) - math.pi
+    for idx, pt in enumerate(trajectory):
+        tx, ty = pt[0], pt[1]
+        th = angles[idx]
+        raw_th = raw_thetas[idx]
         
         if current_state == 0:
             # Leg 1: Target heading 0.0 (East)
-            err = abs((ttheta - 0.0 + math.pi) % (2.0 * math.pi) - math.pi)
-            if err < math.radians(25.0):
-                legs_points[0].append((tx, ty, ttheta))
+            if th < math.radians(15.0):
+                legs_points[0].append((tx, ty, raw_th))
             else:
-                if len(legs_points[0]) >= 3:
-                    current_state = 1
-                    turns_points[0].append((tx, ty, ttheta))
-                else:
-                    legs_points[0].append((tx, ty, ttheta))
+                current_state = 1
+                turns_points[0].append((tx, ty, raw_th))
         elif current_state == 1:
             # Turn 1: Transitioning East -> North (pi/2)
-            err_next = abs((ttheta - (math.pi / 2.0) + math.pi) % (2.0 * math.pi) - math.pi)
-            if err_next < math.radians(25.0):
-                current_state = 2
-                legs_points[1].append((tx, ty, ttheta))
+            if th < math.radians(75.0):
+                turns_points[0].append((tx, ty, raw_th))
             else:
-                turns_points[0].append((tx, ty, ttheta))
+                current_state = 2
+                legs_points[1].append((tx, ty, raw_th))
         elif current_state == 2:
             # Leg 2: Target heading pi/2 (North)
-            err = abs((ttheta - (math.pi / 2.0) + math.pi) % (2.0 * math.pi) - math.pi)
-            if err < math.radians(25.0):
-                legs_points[1].append((tx, ty, ttheta))
+            if th < math.radians(105.0):
+                legs_points[1].append((tx, ty, raw_th))
             else:
-                if len(legs_points[1]) >= 3:
-                    current_state = 3
-                    turns_points[1].append((tx, ty, ttheta))
-                else:
-                    legs_points[1].append((tx, ty, ttheta))
+                current_state = 3
+                turns_points[1].append((tx, ty, raw_th))
         elif current_state == 3:
             # Turn 2: Transitioning North -> West (pi)
-            err_next = abs((ttheta - math.pi + math.pi) % (2.0 * math.pi) - math.pi)
-            if err_next < math.radians(25.0):
-                current_state = 4
-                legs_points[2].append((tx, ty, ttheta))
+            if th < math.radians(165.0):
+                turns_points[1].append((tx, ty, raw_th))
             else:
-                turns_points[1].append((tx, ty, ttheta))
+                current_state = 4
+                legs_points[2].append((tx, ty, raw_th))
         elif current_state == 4:
             # Leg 3: Target heading pi (West)
-            err = abs((ttheta - math.pi + math.pi) % (2.0 * math.pi) - math.pi)
-            if err < math.radians(25.0):
-                legs_points[2].append((tx, ty, ttheta))
+            if th < math.radians(195.0):
+                legs_points[2].append((tx, ty, raw_th))
             else:
-                if len(legs_points[2]) >= 3:
-                    current_state = 5
-                    turns_points[2].append((tx, ty, ttheta))
-                else:
-                    legs_points[2].append((tx, ty, ttheta))
+                current_state = 5
+                turns_points[2].append((tx, ty, raw_th))
         elif current_state == 5:
-            # Turn 3: Transitioning West -> South (-pi/2)
-            err_next = abs((ttheta - (-math.pi / 2.0) + math.pi) % (2.0 * math.pi) - math.pi)
-            if err_next < math.radians(25.0):
+            # Turn 3: Transitioning West -> South (3pi/2 or -pi/2)
+            if th < math.radians(255.0):
+                turns_points[2].append((tx, ty, raw_th))
+            else:
                 current_state = 6
-                legs_points[3].append((tx, ty, ttheta))
-            else:
-                turns_points[2].append((tx, ty, ttheta))
+                legs_points[3].append((tx, ty, raw_th))
         elif current_state == 6:
-            # Leg 4: Target heading -pi/2 (South)
-            err = abs((ttheta - (-math.pi / 2.0) + math.pi) % (2.0 * math.pi) - math.pi)
-            if err < math.radians(25.0):
-                legs_points[3].append((tx, ty, ttheta))
+            # Leg 4: Target heading South
+            if th < math.radians(285.0):
+                legs_points[3].append((tx, ty, raw_th))
             else:
-                if len(legs_points[3]) >= 3:
-                    current_state = 7
-                    turns_points[3].append((tx, ty, ttheta))
-                else:
-                    legs_points[3].append((tx, ty, ttheta))
+                current_state = 7
+                turns_points[3].append((tx, ty, raw_th))
         elif current_state == 7:
-            # Turn 4: Transitioning South -> East (0.0 / Finish)
-            err_next = abs((ttheta - 0.0 + math.pi) % (2.0 * math.pi) - math.pi)
-            if err_next < math.radians(25.0):
-                current_state = 8
-                turn4_end_heading = ttheta
+            # Turn 4: Transitioning South -> East (Finish at origin)
+            if th < math.radians(345.0):
+                turns_points[3].append((tx, ty, raw_th))
             else:
-                turns_points[3].append((tx, ty, ttheta))
+                current_state = 8
+                turn4_end_heading = raw_th
         elif current_state == 8:
-            # Finished square, parked at origin (do not append to Leg 1!)
-            turn4_end_heading = ttheta
+            turn4_end_heading = raw_th
 
     # If the run ended during Turn 4 or after stopping without moving forward along a 5th leg,
     # capture the final heading from the last trajectory point.
     if turn4_end_heading is None and len(trajectory) > 0:
         if current_state >= 7 or len(turns_points[3]) > 0:
-            final_theta = trajectory[-1][2]
-            turn4_end_heading = (final_theta + math.pi) % (2.0 * math.pi) - math.pi
+            turn4_end_heading = raw_thetas[-1]
 
     # Evaluate the 4 Straight Line Segments (30 points total - 7.5 points per leg)
     leg_scores = []
