@@ -58,34 +58,39 @@ void uart_print(const char *str) {
 }
 
 // Define the strong SystemClock_Config to override MicroPython's default weak one in system_stm32.c.
-// This sets up the clock tree (80MHz) and peripheral dividers (I2C1, I2C2, SAI1, ADC, USB)
-// as required by Jesse's C-Kernel.
+// This sets up the clock tree (80MHz SysClk, 48MHz USB FS, ADC, I2C) using the 8 MHz HSE crystal on PH0/PH1.
 void SystemClock_Config(void) {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
     RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
     if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK) {
-        // Panic block
         while (1);
     }
 
     HAL_PWR_EnableBkUpAccess();
 
-    // 1. Configure System Clock using HSI + PLL (80 MHz)
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    // 1. Configure System Clock using 8 MHz HSE crystal on PH0/PH1 -> 80 MHz SysClk
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE | RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON; // Backup internal oscillator
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-    RCC_OscInitStruct.PLL.PLLM = 1;
-    RCC_OscInitStruct.PLL.PLLN = 10;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLM = 1;  // 8 MHz / 1 = 8 MHz VCO input
+    RCC_OscInitStruct.PLL.PLLN = 20; // 8 MHz * 20 = 160 MHz VCO
     RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
-    RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV4;
-    RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+    RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+    RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2; // 160 MHz / 2 = 80 MHz SysClk
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-        while (1);
+        // Fallback to HSI if HSE crystal is not present
+        RCC_OscInitStruct.HSEState = RCC_HSE_OFF;
+        RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+        RCC_OscInitStruct.PLL.PLLM = 1;
+        RCC_OscInitStruct.PLL.PLLN = 10;
+        RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+        HAL_RCC_OscConfig(&RCC_OscInitStruct);
     }
 
     RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
@@ -99,9 +104,10 @@ void SystemClock_Config(void) {
         while (1);
     }
 
-    // 2. Configure USB, ADC, and I2C clocks.
-    // USB uses PLLSAI1-Q (16MHz / 1 * 12 / 4 = 48 MHz)
-    // ADC uses PLLSAI1-R (16MHz / 1 * 12 / 2 = 96 MHz)
+    // 2. Configure USB (48 MHz), ADC (48 MHz), and I2C clocks using PLLSAI1
+    // Configure PLLSAI1: 8 MHz HSE / 1 * 12 = 96 MHz VCOSAI1
+    // PLLSAI1Q: 96 MHz / 2 = 48 MHz for USB OTG FS
+    // PLLSAI1R: 96 MHz / 2 = 48 MHz for ADC
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USB | RCC_PERIPHCLK_ADC
                                              | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_I2C2;
     PeriphClkInitStruct.UsbClockSelection = RCC_USBCLKSOURCE_PLLSAI1;
@@ -109,52 +115,32 @@ void SystemClock_Config(void) {
     PeriphClkInitStruct.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
     PeriphClkInitStruct.I2c2ClockSelection = RCC_I2C2CLKSOURCE_PCLK1;
     
-    PeriphClkInitStruct.PLLSAI1.PLLSAI1Source = RCC_PLLSOURCE_HSI;
+    PeriphClkInitStruct.PLLSAI1.PLLSAI1Source = RCC_PLLSOURCE_HSE;
     PeriphClkInitStruct.PLLSAI1.PLLSAI1M = 1;
     PeriphClkInitStruct.PLLSAI1.PLLSAI1N = 12;
     PeriphClkInitStruct.PLLSAI1.PLLSAI1P = RCC_PLLP_DIV7;
-    PeriphClkInitStruct.PLLSAI1.PLLSAI1Q = RCC_PLLQ_DIV4;
-    PeriphClkInitStruct.PLLSAI1.PLLSAI1R = RCC_PLLR_DIV2;
+    PeriphClkInitStruct.PLLSAI1.PLLSAI1Q = RCC_PLLQ_DIV2; // 48 MHz for USB OTG FS
+    PeriphClkInitStruct.PLLSAI1.PLLSAI1R = RCC_PLLR_DIV2; // 48 MHz for ADC
     PeriphClkInitStruct.PLLSAI1.PLLSAI1ClockOut = RCC_PLLSAI1_48M2CLK | RCC_PLLSAI1_ADC1CLK;
     
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
-        while (1);
-    }
-}
-
-// Define strong mp_hal_stdout_tx_strn to override the default weak one in mphalport.c.
-// This allows redirecting output to USART1 (pins on physical board) for logging.
-mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
-    mp_uint_t ret = len;
-    bool did_write = false;
-
-    // Direct register-level VCP UART output redirect to USART1 for boot logging and fault reporting
-    if (USART1 != NULL && (RCC->APB2ENR & RCC_APB2ENR_USART1EN)) {
-        for (size_t i = 0; i < len; i++) {
-            while (!(USART1->ISR & USART_ISR_TXE));
-            USART1->TDR = (uint8_t)str[i];
-        }
-        did_write = true;
+        // Fallback for PLLSAI1 on HSI
+        PeriphClkInitStruct.PLLSAI1.PLLSAI1Source = RCC_PLLSOURCE_HSI;
+        PeriphClkInitStruct.PLLSAI1.PLLSAI1M = 1;
+        PeriphClkInitStruct.PLLSAI1.PLLSAI1N = 12;
+        PeriphClkInitStruct.PLLSAI1.PLLSAI1Q = RCC_PLLQ_DIV4; // 192 / 4 = 48 MHz
+        PeriphClkInitStruct.PLLSAI1.PLLSAI1R = RCC_PLLR_DIV2;
+        HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct);
     }
 
-    if (MP_STATE_PORT(pyb_stdio_uart) != NULL) {
-        uart_tx_strn(MP_STATE_PORT(pyb_stdio_uart), str, len);
-        did_write = true;
-    }
-    #if MICROPY_HW_USB_CDC && MICROPY_HW_TINYUSB_STACK
-    mp_uint_t cdc_res = mp_usbd_cdc_tx_strn(str, len);
-    if (cdc_res > 0) {
-        did_write = true;
-        ret = MIN(cdc_res, ret);
-    }
-    #endif
-    int dupterm_res = mp_os_dupterm_tx_strn(str, len);
-    if (dupterm_res >= 0) {
-        did_write = true;
-        ret = MIN((mp_uint_t)dupterm_res, ret);
-    }
+    // Enable VDDUSB power supply for STM32L4 USB Full-Speed PHY
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWREx_EnableVddUSB();
 
-    return did_write ? ret : 0;
+    // Configure SysTick for 1ms time base (required for HAL_GetTick and MicroPython mp_hal_delay_ms)
+    HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq() / 1000);
+    HAL_SYSTICK_CLKSourceConfig(SYSTICK_CLKSOURCE_HCLK);
+    NVIC_SetPriority(SysTick_IRQn, NVIC_EncodePriority(NVIC_PRIORITYGROUP_4, TICK_INT_PRIORITY, 0));
 }
 
 void Error_Handler(void) {
@@ -177,7 +163,7 @@ void board_early_init(void) {
     // 2. Initialize USART1 and configure baudrate first so we can output logs immediately
     MX_USART1_UART_Init();
     __HAL_UART_DISABLE(&huart1);
-    USART1->BRR = 694; 
+    USART1->BRR = 694; // Exact 115200 baud at 80.000 MHz (from 8 MHz HSE crystal)
     __HAL_UART_ENABLE(&huart1);
 
     // Set C-Kernel logger UART reference
@@ -192,44 +178,17 @@ void board_early_init(void) {
     extern int pyb_hard_fault_debug;
     pyb_hard_fault_debug = 1;
 
-    // 3. Initialize NVIC and other peripheral controllers
+    // 3. Initialize NVIC
     MX_NVIC_Init();
-    
-    uart_print("Initializing ADC...\n");
-    MX_ADC1_Init();
-    // Disable the ADC DMA interrupt in NVIC. The DMA hardware circular transfer
-    // will continue updating values in the buffer, but it won't interrupt the CPU
-    // (avoiding IRQ loop conflicts with MicroPython's dma.c)
-    HAL_NVIC_DisableIRQ(DMA1_Channel1_IRQn);
-    HAL_NVIC_DisableIRQ(DMA2_Channel3_IRQn);
-    
-    uart_print("Initializing I2C1...\n");
-    MX_I2C1_Init();
-    
-    uart_print("Initializing I2C2...\n");
-    MX_I2C2_Init();
-    
-    uart_print("Initializing Timers...\n");
-    MX_TIM1_Init();
-    MX_TIM3_Init();
-    MX_TIM4_Init();
-    MX_TIM5_Init();
-    MX_TIM7_Init();
-    
-    uart_print("Initializing SPI2 (External Flash)...\n");
-    MX_SPI2_Init();
 
-    // Initialize OLED display early on boot to show welcome feedback
-    uart_print("Initializing Boot OLED Display...\n");
-    SSD1306_Init();
-    SSD1306_Fill(SSD1306_COLOR_BLACK);
-    SSD1306_GotoXY(4, 2);
-    SSD1306_Puts("UCT Mouse", &Font_11x18, SSD1306_COLOR_WHITE);
-    SSD1306_GotoXY(4, 24);
-    SSD1306_Puts("REPL/VCP Ready", &Font_7x10, SSD1306_COLOR_WHITE);
-    SSD1306_GotoXY(4, 40);
-    SSD1306_Puts("Status: Idle", &Font_7x10, SSD1306_COLOR_WHITE);
-    SSD1306_UpdateScreen();
+    // Allow SWD debugging during low-power WFI / sleep modes to prevent ST-Link lockup
+    if (DBGMCU != NULL) {
+        DBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;
+    }
+
+    // Explicitly configure VDDUSB for USB OTG Full Speed PHY
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWREx_EnableVddUSB();
 
     // Configure PB3 (CTRL_LEDS) as GPIO Output Push-Pull and write it HIGH to enable the LED master gate
     __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -254,21 +213,35 @@ void board_early_init(void) {
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct_LEDs);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 
-    // LED1 (PA4) and LED2 (PA5)
+    // LED1 (PA4 on 2026 boards) and LED2 (PA5 on 2026 boards)
     GPIO_InitStruct_LEDs.Pin = GPIO_PIN_4 | GPIO_PIN_5;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct_LEDs);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_SET);
+
+    // Release and configure PC14 and PC15 (LED1 and LED2 on legacy 2025 boards)
+    RCC->APB1ENR1 |= RCC_APB1ENR1_PWREN;
+    PWR->CR1 |= PWR_CR1_DBP;
+    RCC->BDCR |= RCC_BDCR_BDRST;
+    RCC->BDCR &= ~RCC_BDCR_BDRST;
+    PWR->CR1 &= ~PWR_CR1_DBP;
+
+    GPIO_InitStruct_LEDs.Pin = GPIO_PIN_14 | GPIO_PIN_15;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct_LEDs);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14 | GPIO_PIN_15, GPIO_PIN_SET);
+
+    initMicroMouse();
+    mouse_initialized = true;
 
     uart_print("Boot sequence completed successfully.\n");
 }
 
 // Background tick function hook called inside MicroPython VM execution and delay loops
 void kernel_background_tick(void) {
-    extern volatile bool ext_flash_busy;
-    if (ext_flash_busy) {
+    // Never execute blocking I2C sensor or display transactions from ISR context (e.g. USB interrupts)
+    if (__get_IPSR() != 0) {
         return;
     }
-    
+
     static bool in_tick = false;
     if (in_tick) {
         return;
@@ -279,10 +252,6 @@ void kernel_background_tick(void) {
     uint32_t now = HAL_GetTick();
     if (now - last_tick >= 10) { // 100 Hz
         last_tick = now;
-        
-        // Check deferred flash flush
-        extern void bdev_check_flush(void);
-        bdev_check_flush();
 
         if (mouse_initialized) {
             refreshADCs();
@@ -317,31 +286,58 @@ void kernel_background_tick(void) {
     in_tick = false;
 }
 
+#undef TIM4_IRQHandler
+extern TIM_HandleTypeDef htim4;
+void TIM4_IRQHandler(void) {
+    HAL_TIM_IRQHandler(&htim4);
+}
+
 #include "extmod/vfs_fat.h"
 #include "factoryreset.h"
 
 static const char fresh_boot_py[] =
     "# boot.py -- run on boot to configure USB and filesystem\r\n"
-    "# Put app code in main.py\r\n"
-    "\r\n"
-    "import machine\r\n"
-    "import pyb\r\n"
-    "#pyb.main('main.py') # main script to run after this one\r\n"
-    "#pyb.usb_mode('VCP+MSC') # act as a serial and a storage device\r\n"
+    "import os, pyb\r\n"
+    "try:\r\n"
+    "    for f in os.listdir('/flash'):\r\n"
+    "        if f.startswith('._') or f in ('.DS_Store', '.Trashes'):\r\n"
+    "            try: os.remove('/flash/' + f)\r\n"
+    "            except Exception: pass\r\n"
+    "except Exception:\r\n"
+    "    pass\r\n"
+    "pyb.main('main.py')\r\n"
 ;
 
 static const char fresh_main_py[] =
-    "# main.py -- put your code here!\r\n"
+    "# main.py -- UCT Micromouse Default Telemetry Streamer\r\n"
+    "import uct_mouse\r\n"
+    "\r\n"
+    "# Initialize hardware (wakes OLED screen and sensor peripherals)\r\n"
+    "uct_mouse.init()\r\n"
+    "uct_mouse.set_motors(0, 0)\r\n"
+    "\r\n"
+    "print('--- UCT Micromouse Online ---')\r\n"
+    "print('Streaming live telemetry. Replace main.py with your code!')\r\n"
+    "\r\n"
+    "while True:\r\n"
+    "    tof = uct_mouse.get_tof()\r\n"
+    "    enc = uct_mouse.get_encoders()\r\n"
+    "    vbatt = uct_mouse.get_vbatt()\r\n"
+    "    gyro = uct_mouse.get_gyro()\r\n"
+    "    print('VBatt: %.2fV | Gyro: %+.2f dps | Enc: (%d, %d) | ToF: %s' % (vbatt, gyro, enc[0], enc[1], str(tof)))\r\n"
+    "    uct_mouse.delay_ms(250)\r\n"
 ;
 
 static const char fresh_readme_txt[] =
-    "This is the UCT Micromouse (STM32L476RG).\r\n"
+    "This is the UCT Micromouse (STM32L476VE).\r\n"
     "\r\n"
     "You can get started right away by writing your Python code in 'main.py'.\r\n"
     "\r\n"
     "For online docs and resources, please visit:\r\n"
     "https://uct-micromouse.github.io/\r\n"
 ;
+
+static const char fresh_no_index[] = "";
 
 typedef struct _factory_file_t {
     const char *name;
@@ -353,16 +349,20 @@ static const factory_file_t factory_files[] = {
     {"boot.py", sizeof(fresh_boot_py) - 1, fresh_boot_py},
     {"main.py", sizeof(fresh_main_py) - 1, fresh_main_py},
     {"README.txt", sizeof(fresh_readme_txt) - 1, fresh_readme_txt},
+    {".metadata_never_index", 0, fresh_no_index},
 };
 
 void factory_reset_make_files(FATFS *fatfs) {
+    char ram_buf[1024];
     for (size_t i = 0; i < sizeof(factory_files) / sizeof(factory_files[0]); ++i) {
         const factory_file_t *f = &factory_files[i];
         FIL fp;
         FRESULT res = f_open(fatfs, &fp, f->name, FA_WRITE | FA_CREATE_ALWAYS);
         if (res == FR_OK) {
             UINT n;
-            f_write(&fp, f->data, f->len, &n);
+            size_t copy_len = f->len < sizeof(ram_buf) ? f->len : sizeof(ram_buf);
+            memcpy(ram_buf, f->data, copy_len);
+            f_write(&fp, ram_buf, copy_len, &n);
             f_close(&fp);
         }
     }

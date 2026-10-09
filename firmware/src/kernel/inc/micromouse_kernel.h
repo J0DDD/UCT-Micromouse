@@ -16,6 +16,16 @@ typedef struct {
     uint16_t tof_c;
     uint16_t tof_ar;
     uint16_t tof_r;
+    uint16_t tof_raw_l;
+    uint16_t tof_raw_al;
+    uint16_t tof_raw_c;
+    uint16_t tof_raw_ar;
+    uint16_t tof_raw_r;
+    uint16_t tof_sig_l;
+    uint16_t tof_sig_al;
+    uint16_t tof_sig_c;
+    uint16_t tof_sig_ar;
+    uint16_t tof_sig_r;
     uint16_t ir_fl;
     uint16_t ir_fr;
     uint16_t ir_sl;
@@ -59,6 +69,7 @@ void kernel_set_oled_line1(const char* text);
 void kernel_set_oled_line2(const char* text);
 void kernel_set_oled_line3(const char* text);
 void kernel_set_oled_line4(const char* text);
+void kernel_set_oled_line(int line, const char* text);
 void kernel_logger_write_custom(const char* json_str);
 
 #endif // MICROMOUSE_KERNEL_H

@@ -56,9 +56,8 @@ static char kernel_title[20] = "   Simulink       ";
 #endif
 
 // Hardware-specific wiring polarities (1 = normal, -1 = reversed)
-// Standard differential drive usually requires one to be -1. Adjust as needed per physical board.
-static volatile int16_t polarity_l = -1;
-static volatile int16_t polarity_r = -1;
+static volatile int16_t polarity_l = 1;
+static volatile int16_t polarity_r = 1;
 static volatile int16_t enc_polarity_l = 1;
 static volatile int16_t enc_polarity_r = 1;
 
@@ -106,8 +105,6 @@ void kernel_set_pwm(int16_t left_pwm, int16_t right_pwm) {
     int16_t actual_l = left_pwm * polarity_l;
     int16_t actual_r = right_pwm * polarity_r;
 
-    printf("ACTUATE: L=%d (act=%d), R=%d (act=%d)\r\n", left_pwm, actual_l, right_pwm, actual_r);
-
     current_state.left_pwm = left_pwm;   // Report the original INTENT back to telemetry
     current_state.right_pwm = right_pwm; 
     
@@ -123,22 +120,23 @@ void kernel_set_pwm(int16_t left_pwm, int16_t right_pwm) {
     if (duty_l > 999) duty_l = 999;
     if (duty_r > 999) duty_r = 999;
 
-    // Bypass Jesse's int8_t abs() logic which causes signed integer casting faults 
-    // on the Left Motor. Apply the hardware timer mapping natively here:
+    // Apply the hardware timer mapping natively:
+    // Left Motor:  Forward = TIM3 CH4 (PC9), Reverse = TIM3 CH3 (PC8)
+    // Right Motor: Forward = TIM3 CH2 (PC7), Reverse = TIM3 CH1 (PC6)
     if (actual_l >= 0) {
-        TIM3->CCR3 = duty_l;
-        TIM3->CCR4 = 0;
-    } else {
         TIM3->CCR3 = 0;
-        TIM3->CCR4 = duty_l; 
+        TIM3->CCR4 = duty_l;
+    } else {
+        TIM3->CCR3 = duty_l;
+        TIM3->CCR4 = 0; 
     }
 
     if (actual_r >= 0) {
-        TIM3->CCR1 = duty_r;
-        TIM3->CCR2 = 0;
-    } else {
         TIM3->CCR1 = 0;
         TIM3->CCR2 = duty_r;
+    } else {
+        TIM3->CCR1 = duty_r;
+        TIM3->CCR2 = 0;
     }
 
     // Only enable the motor driver if there's actual movement requested.
@@ -244,13 +242,23 @@ void kernel_snapshot_state(void) {
     current_state.tof_c  = TOF_sb_front_result.Distance;
     current_state.tof_ar = TOF_sb_front_right_result.Distance;
     current_state.tof_r  = TOF_sb_right_result.Distance;
+    current_state.tof_raw_l  = TOF_sb_left_result.rawDistance;
+    current_state.tof_raw_al = TOF_sb_front_left_result.rawDistance;
+    current_state.tof_raw_c  = TOF_sb_front_result.rawDistance;
+    current_state.tof_raw_ar = TOF_sb_front_right_result.rawDistance;
+    current_state.tof_raw_r  = TOF_sb_right_result.rawDistance;
+    current_state.tof_sig_l  = TOF_sb_left_result.Signal;
+    current_state.tof_sig_al = TOF_sb_front_left_result.Signal;
+    current_state.tof_sig_c  = TOF_sb_front_result.Signal;
+    current_state.tof_sig_ar = TOF_sb_front_right_result.Signal;
+    current_state.tof_sig_r  = TOF_sb_right_result.Signal;
     current_state.ir_fl = 0; // TODO: Connect to Jesse's IR drivers
     current_state.ir_fr = 0; 
     current_state.ir_sl = 0;
     current_state.ir_sr = 0;
     current_state.lenc = leftEncoderCount * enc_polarity_l;
     current_state.renc = rightEncoderCount * enc_polarity_r;
-    current_state.gyro   = IMU_Gyro_DPS[2] * 2.0f;    // Yaw axis in degrees per second (DPS) with hardware scaling correction
+    current_state.gyro   = IMU_Gyro_DPS[2];    // Yaw axis in degrees per second (DPS)
     current_state.v_batt = (float)Vbattery / 1000.0f; 
     current_state.btn1 = SW1.state;
     current_state.btn2 = SW2.state;
@@ -358,24 +366,57 @@ void kernel_set_title(const char* title) {
 }
 
 void kernel_set_oled_header(const char* text) {
-    if (text) strncpy(g_oled_header, text, sizeof(g_oled_header) - 1);
-    g_oled_header[sizeof(g_oled_header) - 1] = '\0';
+    if (text && text[0] != '\0') {
+        snprintf(g_oled_header, sizeof(g_oled_header), "%-18.18s", text);
+    } else {
+        g_oled_header[0] = '\0';
+    }
 }
 void kernel_set_oled_line1(const char* text) {
-    if (text) strncpy(g_oled_line1, text, sizeof(g_oled_line1) - 1);
-    g_oled_line1[sizeof(g_oled_line1) - 1] = '\0';
+    if (text && text[0] != '\0') {
+        snprintf(g_oled_line1, sizeof(g_oled_line1), "%-18.18s", text);
+    } else {
+        g_oled_line1[0] = '\0';
+    }
 }
 void kernel_set_oled_line2(const char* text) {
-    if (text) strncpy(g_oled_line2, text, sizeof(g_oled_line2) - 1);
-    g_oled_line2[sizeof(g_oled_line2) - 1] = '\0';
+    if (text && text[0] != '\0') {
+        snprintf(g_oled_line2, sizeof(g_oled_line2), "%-18.18s", text);
+    } else {
+        g_oled_line2[0] = '\0';
+    }
 }
 void kernel_set_oled_line3(const char* text) {
-    if (text) strncpy(g_oled_line3, text, sizeof(g_oled_line3) - 1);
-    g_oled_line3[sizeof(g_oled_line3) - 1] = '\0';
+    if (text && text[0] != '\0') {
+        snprintf(g_oled_line3, sizeof(g_oled_line3), "%-18.18s", text);
+    } else {
+        g_oled_line3[0] = '\0';
+    }
 }
 void kernel_set_oled_line4(const char* text) {
-    if (text) strncpy(g_oled_line4, text, sizeof(g_oled_line4) - 1);
-    g_oled_line4[sizeof(g_oled_line4) - 1] = '\0';
+    if (text && text[0] != '\0') {
+        snprintf(g_oled_line4, sizeof(g_oled_line4), "%-18.18s", text);
+    } else {
+        g_oled_line4[0] = '\0';
+    }
+}
+
+void kernel_set_oled_line(int line, const char* text) {
+    switch (line) {
+        case 0: kernel_set_oled_header(text); break;
+        case 1: kernel_set_oled_line1(text);  break;
+        case 2: kernel_set_oled_line2(text);  break;
+        case 3: kernel_set_oled_line3(text);  break;
+        case 4: kernel_set_oled_line4(text);  break;
+        default:
+            if (line < 0) {
+                g_oled_line1[0] = '\0';
+                g_oled_line2[0] = '\0';
+                g_oled_line3[0] = '\0';
+                g_oled_line4[0] = '\0';
+            }
+            break;
+    }
 }
 
 void kernel_update_display(void) {
@@ -391,41 +432,42 @@ void kernel_update_display(void) {
         first_run = false;
     }
 
-    // Check if Simulink is providing display data. If so, use it.
-    if (g_oled_header[0] != '\0' || g_oled_line1[0] != '\0' || 
-        g_oled_line2[0] != '\0' || g_oled_line3[0] != '\0' || 
-        g_oled_line4[0] != '\0') {
-        SSD1306_GotoXY(0, 0);
-        SSD1306_Puts(g_oled_header, &Font_7x10, SSD1306_COLOR_WHITE);
-        SSD1306_GotoXY(0, 16);
-        SSD1306_Puts(g_oled_line1, &Font_7x10, SSD1306_COLOR_WHITE);
-        SSD1306_GotoXY(0, 28);
-        SSD1306_Puts(g_oled_line2, &Font_7x10, SSD1306_COLOR_WHITE);
-        SSD1306_GotoXY(0, 40);
-        SSD1306_Puts(g_oled_line3, &Font_7x10, SSD1306_COLOR_WHITE);
-        SSD1306_GotoXY(0, 52);
-        SSD1306_Puts(g_oled_line4, &Font_7x10, SSD1306_COLOR_WHITE);
-    } else {
-        char buf[32];
-        
-        // 1. The Yellow Zone (Top 16 Pixels)
-        SSD1306_GotoXY(0, 0);
-        SSD1306_Puts(kernel_title, &Font_7x10, SSD1306_COLOR_WHITE);
+    char buf[32];
 
-        // 2. The Blue Zone (Starts at y=16)
-        // We pad with spaces ("%-4d", "   ") to overwrite old characters without needing to Fill(BLACK)
-        SSD1306_GotoXY(0, 16);
+    // 1. Header (Yellow Zone, y=0)
+    SSD1306_GotoXY(0, 0);
+    if (g_oled_header[0] != '\0') {
+        SSD1306_Puts(g_oled_header, &Font_7x10, SSD1306_COLOR_WHITE);
+    } else {
+        SSD1306_Puts(kernel_title, &Font_7x10, SSD1306_COLOR_WHITE);
+    }
+
+    // 2. Line 1 (y=16)
+    SSD1306_GotoXY(0, 16);
+    if (g_oled_line1[0] != '\0') {
+        SSD1306_Puts(g_oled_line1, &Font_7x10, SSD1306_COLOR_WHITE);
+    } else {
         snprintf(buf, sizeof(buf), "CMD: %-4d  %-4d   ", current_state.left_pwm, current_state.right_pwm);
         SSD1306_Puts(buf, &Font_7x10, SSD1306_COLOR_WHITE);
+    }
 
-        SSD1306_GotoXY(0, 28);
+    // 3. Line 2 (y=28)
+    SSD1306_GotoXY(0, 28);
+    if (g_oled_line2[0] != '\0') {
+        SSD1306_Puts(g_oled_line2, &Font_7x10, SSD1306_COLOR_WHITE);
+    } else {
         uint32_t val_first = (current_state.tof_l < 8190) ? current_state.tof_l : current_state.tof_al;
         uint32_t val_mid   = current_state.tof_c;
         uint32_t val_third = (current_state.tof_r < 8190) ? current_state.tof_r : current_state.tof_ar;
         snprintf(buf, sizeof(buf), "TOF:%4lu %4lu %4lu", (unsigned long)val_first, (unsigned long)val_mid, (unsigned long)val_third);
         SSD1306_Puts(buf, &Font_7x10, SSD1306_COLOR_WHITE);
+    }
 
-        SSD1306_GotoXY(0, 40);
+    // 4. Line 3 (y=40)
+    SSD1306_GotoXY(0, 40);
+    if (g_oled_line3[0] != '\0') {
+        SSD1306_Puts(g_oled_line3, &Font_7x10, SSD1306_COLOR_WHITE);
+    } else {
         int vbatt_int = (int)current_state.v_batt;
         int vbatt_frac = (int)(current_state.v_batt * 100.0f) % 100;
         float bat_val = current_state.v_batt;
@@ -434,8 +476,13 @@ void kernel_update_display(void) {
         if (bat_pct < 0) bat_pct = 0;
         snprintf(buf, sizeof(buf), "BAT:%d.%02dV %d%% %-3dmA", vbatt_int, vbatt_frac < 0 ? -vbatt_frac : vbatt_frac, bat_pct, Current);
         SSD1306_Puts(buf, &Font_7x10, SSD1306_COLOR_WHITE);
+    }
 
-        SSD1306_GotoXY(0, 52);
+    // 5. Line 4 (y=52)
+    SSD1306_GotoXY(0, 52);
+    if (g_oled_line4[0] != '\0') {
+        SSD1306_Puts(g_oled_line4, &Font_7x10, SSD1306_COLOR_WHITE);
+    } else {
         if (watchdog_timer_ms > 1000) {
             SSD1306_Puts("WDG: CUTOFF       ", &Font_7x10, SSD1306_COLOR_WHITE);
         } else {

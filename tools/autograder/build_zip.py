@@ -28,7 +28,7 @@ def build_single_zip(assignment, script_dir, root_dir, assignments_dir, deploy_d
         
         # Simulator components
         (os.path.join(root_dir, "tools", "physics_sim.py"), "physics_sim.py"),
-        (os.path.join(root_dir, "tools", "simulation_config.json"), "simulation_config.json"),
+        (os.path.join(target_assignment_dir, "simulation_config.json") if os.path.exists(os.path.join(target_assignment_dir, "simulation_config.json")) else os.path.join(root_dir, "tools", "simulation_config.json"), "simulation_config.json"),
         (os.path.join(root_dir, "python", "micromouse.py"), "micromouse.py"),
         (os.path.join(root_dir, "python", "uct_mouse.py"), "uct_mouse.py"),
         

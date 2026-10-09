@@ -8,6 +8,9 @@ This document outlines the architecture of the UCT Micromouse project, a platfor
 * **Role:** Course Convenor (2026 Academic Year Rollout).
 * **Distribution Paradigm:** Native MATLAB Project Toolbox Add-On deployment.
 * **Core Philosophy:** Software paradigm selection serves as an explicit design challenge for ECSA GA 3 / GA 5 compliance tracking.
+* **Host Python Execution Rule:**
+  * **Primary Interpreter:** Always execute Python commands and tools using `/opt/local/bin/python` (invoked simply as `python` in the user's zsh shell, Python 3.13). This interpreter contains all required simulation and grading dependencies (`pygame`, `numpy`, `scipy`, `pyserial`, `pytest`, etc.).
+  * **Do NOT use unconfigured `python3`:** On this host, `python3` points to `/opt/homebrew/bin/python3` (Python 3.14), which lacks the simulation libraries and will fail with `Missing required Python libraries`.
 
 ---
 
@@ -81,10 +84,8 @@ The system is strictly divided into three distinct layers to preserve the kernel
 ---
 
 ## 6. Hardware Quirks & Known States
-* **The 72 MHz / 80 MHz Silicon Lottery:** Due to grey-market silicon or missing HSI factory calibration trims in this specific batch of STM32s, some boards successfully achieve the targeted `80 MHz` PLL clock, while identically flashed sister boards cap out at `72 MHz`.
-  * **Impact:** A board running at 72 MHz while programmed for 80 MHz will calculate incorrect UART baud dividers (an 11.1% error), causing the Python dashboard to see garbage hex and hang on connection.
-  * **Diagnosis (Baud Sweep):** If the board outputs garbage at 115200 baud, run a serial monitor test at `103680` baud ($115200 \times \frac{72}{80}$). If you see clean telemetry (`{"gyro":...}`), the board clock is running at 72 MHz.
-  * **Fix:** The standard firmware strictly targets the healthy `80 MHz` (using `USART1->BRR = 694`). If a specific chassis is confirmed to be a 72 MHz outlier, swap the USART divider in `src/main.c` to `625` and label the board.
+* **Historical Clock Discrepancy & HSE Crystal Resolution:** In earlier iterations, relying on the internal RC oscillator (HSI16) without factory calibration trims led to clock frequency variations (e.g. ~72 MHz vs targeted 80 MHz on uncalibrated dies), causing baud rate calculation errors and serial communication issues.
+  * **Resolution:** All 2025 and 2026 processor boards feature a uniform **8.000 MHz external quartz crystal resonator (HSE) on pins `PH0` and `PH1`**. The firmware is strictly configured to use this 8 MHz HSE crystal (`MICROPY_HW_CLK_USE_HSE = 1`, `PLLM = 1`, `PLLN = 20`, `PLLR = DIV2` for 80.000 MHz SysClk, and `PLLSAIN = 12`, `PLLSAIQ = DIV2` for 48.000 MHz USB). This guarantees exact 115200 baud (`USART1->BRR = 694`) and 48 MHz USB clocks across all hardware batches with zero clock drift. Do not revert to internal HSI/MSI clocking.
 * **Bare-Metal Semihosting File I/O Lockup Trap:** Because the microcontroller runs bare-metal without a file system, executing file operations in Python (like `open()` or `with open(...)`) delegates to the C standard library (`libc`).
   * **Impact:** The library attempts to trigger **Semihosting** to perform file I/O on the host machine. This issues an ARM breakpoint instruction (`BKPT 0xAB`), which freezes the microcontroller's CPU immediately. The serial port goes completely dead (0 bytes transmitted).
   * **Fix:** Do not call `open()`, `read()`, or other file system APIs inside Python scripts deployed to the mouse. Default polarity configurations must be hardcoded in code (e.g. `uct_mouse.set_polarity(1, 1)`) rather than read from external text files.
@@ -101,11 +102,16 @@ The system is strictly divided into three distinct layers to preserve the kernel
 * **Simulation Double-Stepping Bug (Resolved):** In earlier iterations, calling both `uct_mouse.set_motors()` and `uct_mouse.delay_ms()` within the same loop advanced the physics simulator time step twice per loop.
   * **Impact:** The mouse travelled or turned roughly twice the expected distance (e.g., turning 180 degrees instead of 90) because the simulation accumulated two ticks (0.1s total) per logic cycle instead of one (0.05s).
   * **Fix:** `set_motors` has been restructured in standard templates. Student control loops should call `set_motors` appropriately so time advancement is tightly coupled and predictable.
-* **Fast Simulation Mode Configuration Interface:** To support reinforcement learning (RL) or rapid offline batch testing, the simulator can run in high-speed offline mode where standard wall-clock delays are bypassed. The state `_is_fast_sim_active` in `uct_mouse.py` is resolved dynamically in this order:
-  * **Programmatic Code Override:** Call `uct_mouse.set_fast_sim(True/False)` or initialize via `uct_mouse.init(fast_sim=True/False)`.
-  * **Configuration File:** Add `"fast_sim": true` or `"fast_sim": false` in `sim_config.json`.
-  * **Environment Variables:** Set `GRADESCOPE_AUTOGRADER=1`, `UCT_MICROMOUSE_FAST_SIM=1`, or `UCT_OFFLINE_MODE=1`.
-  * When enabled, `time.sleep` calls are dynamically intercepted via frame-stack analysis (`sys._getframe()`) and redirected to virtual simulator steps.
+* **Fast Simulation Mode & `get_ticks_ms()` Parity (Hardware vs Virtual Time):** To support reinforcement learning (RL), autograding, or rapid offline batch testing, the simulator can run in high-speed offline mode where standard wall-clock delays are bypassed while preserving deterministic virtual time tracking:
+  * **Unified API:** Both `uct_mouse.get_ticks_ms()` and `uct_mouse.ticks_ms()` (as well as `time.ticks_ms()`, `time.ticks_diff()`, `time.ticks_add()`, `time.sleep_ms()`) are supported identically across all three deployment modes:
+    * **Physical Hardware:** Returns the true MCU millisecond SysTick counter via `HAL_GetTick()`.
+    * **Desktop Real-Time Simulation:** Returns virtual elapsed time (`_virtual_time_ms`) paced at 100 Hz against real wall-clock time.
+    * **Fast Simulation Mode (`fast_sim=True`):** Advances virtual time (`_virtual_time_ms`) instantaneously inside `delay_ms()` / `time.sleep()` / `sleep_ms()` calls by the exact stepped physics duration without sleeping, allowing `(t_now - t_prev)` integration loops to execute at thousands of frames per second with mathematical equivalence.
+  * **Fast Simulation Activation Priority:** Resolved dynamically in this order:
+    1. **Programmatic Code Override:** Call `uct_mouse.set_fast_sim(True/False)` or initialize via `uct_mouse.init(fast_sim=True/False)`.
+    2. **Configuration File:** Add `"fast_sim": true` or `"fast_sim": false` in `sim_config.json`.
+    3. **Environment Variables:** Set `GRADESCOPE_AUTOGRADER=1`, `UCT_MICROMOUSE_FAST_SIM=1`, or `UCT_OFFLINE_MODE=1`.
+    * When active, standard `time.sleep` calls are dynamically intercepted via frame-stack analysis (`sys._getframe()`) and redirected to virtual simulator steps.
 * **MicroPython Read-During-Write Flash Corruption (Factory Reset):** When the MicroPython internal FAT filesystem is formatted on first boot, `factory_reset_make_files` writes default files (`boot.py`, `main.py`, `README.txt`) to Flash.
   * **Impact:** Writing these files by reading directly from C string literals (which also reside in Flash) violates the STM32 single-bank Flash read-during-write hardware constraint. The AHB bus returns corrupted binary garbage, leading to a parser crash: `RuntimeError: name too long`.
   * **Fix:** Buffer default file strings into a temporary stack RAM array (`ram_buf`) before calling `f_write()`. Reading from RAM during Flash programming cycles prevents bank access collisions.
@@ -118,15 +124,19 @@ The system is strictly divided into three distinct layers to preserve the kernel
 * **Onboard LED Pin Mapping & Master Gating Control:** 
   * LED0 is connected to `PC13`, LED1 is connected to `PA4`, and LED2 is connected to `PA5`.
   * **Critical Gating Pin:** All three LEDs are electrically controlled/gated by pin `PB3` (`CTRL_LEDS`). `PB3` must be written `HIGH` (`GPIO_PIN_SET`) during board initialization, otherwise all LEDs will remain physically turned off regardless of the PC13/PA4/PA5 pin states.
-* **External Flash Partitioning & FAT Filesystem Offset:** To avoid wearing out the internal microcontroller flash, the FAT filesystem (`UCT_MMOUSE` drive) is shifted to the last **128 KB** of the external SPI flash (logical blocks mapped with offset `0xE0000` to `0xFFFFF`).
+* **Dual-IMU Auto-Detection (2026 vs Legacy 2025 Boards):** The firmware dynamically auto-detects and supports both the newer **ICM-42605** (`0x68`, WHO_AM_I `0x42`) and the legacy **LSM6DS3** (`0x6A`, WHO_AM_I `0x69`) IMUs on I2C2 at boot. Both drivers are normalized to output standard SI units ($\text{rad/s}$ for gyroscope, $\text{m/s}^2$ for accelerometer).
+* **Unified MicroPython Filesystem on Internal Flash:** To support legacy boards without external SPI flash while preserving compatibility on 2026 boards, the MicroPython FAT filesystem (`UCT_MMOUSE` drive) is allocated to a dedicated **64 KB** partition on the internal STM32 MCU Flash (`0x08060000` to `0x0806FFFF`).
+* **Dual-Backend Telemetry Logger (External vs Internal Flash):** The C-Kernel automatically logs telemetry at **25 Hz** in sparse JSON text format:
+  * **2026 Boards (External SPI Flash present):** Logs to the full 1 MB SPI NOR flash partition (`ZD25WQ80C`), providing ~20–25 minutes of continuous high-fidelity telemetry.
+  * **Legacy 2025 Boards (No external SPI flash):** Automatically falls back to a **64 KB** internal flash partition (`0x08070000` to `0x0807FFFF`), providing ~60–90 seconds of logging (sufficient for individual maze runs and control testing).
 * **MicroPython USB Mounting Mode and Hard Reset Requirement:** By default, MicroPython initializes in VCP-only mode to prevent filesystem corruption. Setting `pyb.usb_mode('VCP+MSC')` in `boot.py` allows the USB drive to mount read-write, but this change **only takes effect on a physical cold/hard reboot** (power cycle or physical reset button). A soft-reboot (`Ctrl+D` over REPL) will not re-initialize the USB controller stack.
 * **ST-Link USB Programmer Endpoint Lockup:** During frequent flash/reset cycles, the ST-Link's onboard USB controller can hang. While macOS still lists the VCP serial port node (`/dev/cu.usbmodem11302`), raw USB commands via `st-flash` or `libusb` will fail with `Couldn't find any ST-Link devices`. This must be resolved by physically unplugging and replugging the ST-Link USB programmer cable.
 * **Backup Domain Reset for GPIO PC14/PC15 release:** Pins PC14 and PC15 (pins 8 and 9) are mapped to LEDs but also function as the Low Speed External (LSE) crystal oscillator. Because the Backup Domain clock settings are battery-backed, any previous firmware that enabled LSE will lock these pins out of GPIO mode. This persists even across flash-erasing the MCU. To release them for GPIO use in MicroPython, you must write to the Power Control and RCC Backup registers to trigger a Backup Domain Reset:
   1. Set `DBP` bit in `PWR_CR1` (`0x40007000 |= 0x100`) to enable write access.
   2. Toggle `BDRST` in `RCC_BDCR` (`0x40021090 |= 0x10000`, then clear it).
   3. Clear `DBP` to restore backup protection.
-* **JSON Telemetry Logger & Sparse Compression:** The C-Kernel automatically logs runs at **25 Hz** in a sparse JSON text format. Logging triggers automatically on first motor actuation, overwrites the previous run (resets pointer to `0x00000`), and writes to the first **896 KB** partition.
-* **Unique UID & Code Verification Hashing (Anti-Cheat):** The first line of every log contains a `log_header` containing the microcontroller's unique 96-bit Device UID and a 32-bit FNV-1a checksum hash of the running Python bytecode / FAT filesystem state to verify student submission authenticity. UIDs are not registered in advance; instead, convenors check logs retrospectively for duplicate UIDs to detect shared code or drives.
+* **JSON Telemetry Logger & Sparse Compression:** The C-Kernel automatically logs runs at **25 Hz** in a sparse JSON text format. Logging triggers automatically on first motor actuation, overwrites the previous run (resets pointer to `0x00000`), and writes to the appropriate flash partition.
+* **Unique UID & Code Verification Hashing (Anti-Cheat):** The first line of every log contains a `log_header` JSON frame with the board generation (`"board": "2026"` / `"2025"`), active IMU model (`"imu": "LSM6DS3"` / `"ICM42605"`), microcontroller's unique 96-bit Device UID (`"uid"`), and a 32-bit FNV-1a checksum hash (`"hash"`) of the running Python bytecode / FAT filesystem state to verify student submission authenticity. UIDs are not registered in advance; instead, convenors check logs retrospectively for duplicate UIDs to detect shared code or drives.
 * **VCP Log Dumping protocol:** Exposes serial command `{"c":{"dump":1}}` (and Python helper `uct_mouse.dump_logs()`) which pauses interrupts and dumps log bytes of the last run to the console.
 * **Research Utilization of Telemetry Dataset:** The generated logs from 150+ students are aggregate-audited to build a high-fidelity system identification model of the physical mouse dynamics, and to evaluate off-board path reconstruction (e.g. Extended Kalman Filter/Smoother predictors) in robotics research.
 * **Document Output Compilation Rule:** Do NOT automatically compile or generate PDF/HTML versions of planning, instructions, or course description Markdown documents in the workspace. Any document compilation must be left for the convenor to execute manually when required.
@@ -134,14 +144,36 @@ The system is strictly divided into three distinct layers to preserve the kernel
 * **Markdown List Formatting Rule:** Always place a blank line (empty newline) immediately before initiating a bulleted (`*`, `-`) or numbered (`1.`) list in Markdown documents. Failing to do so causes Pandoc and other parsers to collapse the list items into inline text, rendering raw asterisks in the compiled output.
 * **GitHub Pages / HTML Deployment Sync:** All course documentation and assignments have transitioned entirely to GitHub Pages HTML. There are no longer any student-facing PDF reference documents. When updates are made to documents in the repository, they deploy and update live automatically via GitHub Pages.
 * **MicroPython Connection Strategy:** Students using the MicroPython engine must flash the base interpreter binary (`micropython.bin`) once via ST-Link. After that, they should interact with the mouse purely over the processor board's USB OTG port, which hosts the REPL interface and creates the USB Mass Storage device.
-* **Soft Reset SPI2 & CS Alternate Function Lockout:** During soft reset, MicroPython resets all GPIO pins to Input Floating, but does not clear SRAM variables like `flash.initialized`. This causes subsequent filesystem mounts to skip SPI2/CS initialization, leaving pins floating and hanging block reads. To fix this, `flash.initialized` is set to `false` in `BDEV_IOCTL_INIT` and the SPI2 peripheral/CS GPIO pins are explicitly re-initialized inside `ext_flash_init()`.
-* **NVIC Vector Storm Lockups on Soft Reboot:** Active background interrupts (TIM1, TIM3, TIM4, TIM5, TIM7, ADC, DMA) left running during soft reset cause the processor to jump to unmapped default exception vectors when the Vector Table (`SCB->VTOR`) shifts. To prevent CPU freezes, the board uses the `MICROPY_BOARD_START_SOFT_RESET` hook to systematically stop motor PWM, disable DMA channels, and clear/disable these NVIC interrupts before the reset transition.
+* **Soft Reset Cleanup & DMA/NVIC De-Initialization:** Active background interrupts (TIM1, TIM3, TIM4, TIM5, TIM7, ADC, DMA) left running during soft reset cause the processor to jump to unmapped default exception vectors when the Vector Table (`SCB->VTOR`) shifts. To prevent CPU freezes, the board uses the `MICROPY_BOARD_START_SOFT_RESET` hook in `bdev.c` to systematically stop motor PWM, disable DMA channels, and clear/disable NVIC interrupts before the reset transition.
 * **USB CDC Reset and Auto-Mount Configuration:** Calling `pyb.usb_mode()` in `boot.py` during soft-reboot resets the USB CDC stack, dropping the VCP serial connection. Keeping `pyb.usb_mode()` calls commented out allows the board to boot directly into its default `VCP+MSC` configuration, which automatically mounts the USB drive and enables VCP telemetry without connection dropouts or requiring physical button holds.
 * **Bare-Metal Semihosting Lockup on Unhandled Exceptions:** Top-level unhandled Python exceptions (e.g. from invalid pin configurations in `boot.py` or file-writing error catchers in `main.py`) delegate traceback prints to the C standard library, which triggers ARM `BKPT 0xAB` (Semihosting). Without a host debugger, this freezes the CPU immediately. Wrapping `boot.py` in a `try...except` block, correcting pin references to `'PE6'`, and avoiding file `open()` calls in error catchers prevents these freezes.
-* **Direct Synchronous Write-Through on External Flash:** To guarantee instant persistence across unexpected power cuts or battery switches, `uct_bdev_writeblocks()` in `bdev.c` immediately executes `ext_flash_flush()` on write. Data is written straight through to the physical NOR flash sectors without relying on delayed background timers.
-* **Clean External Flash Formatting & Factory Template:** When external SPI flash is unformatted or after a full chip erase, `factory_reset_create_filesystem()` formats the 128 KB partition with `f_mkfs` and calls `factory_reset_make_files()` in `board_init.c` to populate standard files (`boot.py`, `main.py`, and `README.txt`). Legacy Windows 7/8 setup INF files (`pybcdc.inf`) are deliberately omitted to keep the drive root clean. Once formatted, normal boots mount the existing filesystem directly without re-formatting. Explicit resets can also be triggered via `python tools/deploy.py --engine micropython --factory-reset` or `os.VfsFat.mkfs(pyb.Flash())`.
+* **Factory Reset Pipeline:** When internal flash is unformatted or after a chip erase, MicroPython initializes the 64 KB internal storage partition (`0x08060000`). Factory resetting can be triggered via `python tools/deploy.py --engine micropython --factory-reset` or `os.VfsFat.mkfs(pyb.Flash())`, cleanly populating default `boot.py`, `main.py`, and `README.txt` files without flash read-during-write bank collisions.
+* **VL53L0X Open-Air Noise Rejection & Signal Rate Threshold:** In open air / empty space with no obstacle, ambient 940 nm photon shot noise occasionally triggers the VL53L0X ASIC histogram DSP, generating false short-range distance glitches (~30–80 mm) that prematurely trip collision checks like `while TOF > 100:`. To guarantee a solid out-of-range baseline (`8190 mm`), `getVL53L0()` in `VL53L0X.c` enforces a minimum return signal amplitude check:
+  ```c
+  if ((distanceStr.rangeStatus == RANGECOMPLETE || distanceStr.rangeStatus == NONE) &&
+      distanceStr.Signal >= 150 && distance > 20 && distance < 2000) {
+      TOF_result->Distance = distance;
+  } else {
+      TOF_result->Distance = 8190;
+  }
+  ```
+  `Signal = 150` (~1.17 MCPS in 9.7 fixpoint) cleanly rejects 100% of open-air ambient noise while preserving responsive, high-fidelity wall detection up to ~700–800 mm.
 * **Full-Duplex Atomic Hardware SPI Transfers & Status Polling:** In `ZD25WQ80C.c`, all SPI commands, address phases, page programming, and status register polling use synchronous, atomic byte transfers (`spi_transfer_byte`) with timeout guards. `wait_for_ready()` properly inspects the physical Write-In-Progress (`WIP`) bit without RX FIFO dummy byte shifts, ensuring the MCU never begins subsequent transactions while a 4 KB sector erase (45–300 ms) is in progress.
 * **MicroPython BDEV Single-Block Boolean Return Contract:** In `ports/stm32/storage.c`, single-block macros (`MICROPY_HW_BDEV_READBLOCK` / `WRITEBLOCK`) expect a **boolean** (`true` for success). In `mpconfigboard.h`, these are explicitly mapped as `(uct_bdev_readblocks(dest, bl, 1) == 0)` so that standard POSIX 0 return values are not misinterpreted by FatFs as read errors.
+* **Gradescope Autograder HTML Visualizations (Inline SVG Map & Video Playback):** Gradescope does not provide an artifact download tab for arbitrary binary files (like `/autograder/results/run.mp4`) generated in the container. To provide visual feedback, `grade_runner.py` sets `"output_format": "html"` in `results.json` and embeds:
+
+  1. An inline HTML5 `<video controls>` tag streaming base64-encoded MP4 playback of Test 1 directly into the student's submission panel.
+  2. An interactive 2D vector trajectory map (SVG) rendering the ideal $1.0\text{m} \times 1.0\text{m}$ reference square against the student's actual path with start $(0,0)$ and end coordinates.
+* **Autograder Non-Interactive Docker Build Configuration (`setup.sh`):** Headless Gradescope Docker builds require `export DEBIAN_FRONTEND=noninteractive` and `export TZ=Etc/UTC` alongside `apt-get install -y --no-install-recommends` in `tools/autograder/setup.sh`. Omitting these causes packages like `ffmpeg` and `tzdata` to halt on interactive keyboard timezone selection prompts, hanging the Gradescope Docker image build for hours.
+* **Motor PWM Prescaler for 1S Battery Operation (250 Hz Carrier):** Running the motor timer (`TIM3`) at high PWM carrier frequencies (e.g. 20 kHz, `PSC = 3`) chokes small coreless DC motors on a 1S LiPo battery (~3.7–4.0 V) due to high inductive reactance ($X_L = 2\pi f L$). At 20 kHz, the coils never reach sufficient current during short pulses, requiring ~60–65% duty cycle before overcoming static friction.
+  * **Resolution:** Configure `TIM3` with `PSC = 319` and `ARR = 999` in `MicroMouse_main.c` ($80\text{ MHz} / (320 \times 1000) = 250\text{ Hz}$). The lower carrier frequency lets drive current saturate the windings, dropping the physical starting deadband to ~25–28% PWM and delivering smooth, high-torque low-speed driving.
+* **Physical Encoder Resolution vs Simulator Calibration:** The physical 2025/2026 chassis with standard rubber wheels measures $\approx \mathbf{4,400\text{ ticks/m}}$ (compared to the simulator's theoretical $5,730\text{ ticks/m}$ based on $R = 0.0325\text{ m}$). Sending $5,730\text{ ticks}$ on physical hardware drives $\approx 1.30\text{ m}$. Student controllers targeting physical hardware should calibrate `TICKS_PER_M = 4400`.
+* **Turn Deceleration Profile & Active Reverse-Torque Braking:** Cutting motor power (`0, 0`) at the moment a high-speed in-place turn reaches $90^\circ$ causes rotational momentum to coast an unbraked $15^\circ\text{--}30^\circ$ across low-friction surfaces.
+  * **Fix:** Ramp down turning speed proportionally within the final $25^\circ\text{--}35^\circ$ of the target (`GYRO_DECEL_DEG = 35.0`), crawling into $90^\circ$ at $\le 25^\circ/\text{s}$, and fire a **$30\text{ ms}$ active reverse-torque counter-pulse** (`BRAKE_PULSE_PWM`) the instant $90.0^\circ$ is crossed to clamp motor back-EMF and stop on a dime.
+* **Straight-Line Gyro PD Heading Stabilization & Oscillation Damping:** Pure proportional control on both encoder imbalance `(dl - dr)` and gyro heading drift creates an underdamped harmonic oscillator where the two feedback terms fight each other, causing fishtailing and aggressive motor over-actuation.
+  * **Fix:** Use gyro heading as the primary orientation authority with derivative angular rate damping:
+    $$\text{steer} = (K_{p,\text{heading}} \cdot \text{drift}) + (K_{d,\text{gyro}} \cdot \omega_z)$$
+    with $K_{p} \approx 0.45, K_{d} \approx 0.035$, and clamp maximum differential steering authority to $\pm 12.0\text{ PWM}$.
 
 ---
 
@@ -223,3 +255,20 @@ Use this index to resolve common tasks instantly without additional user prompti
      cp build/bin/micropython.bin firmware/binaries/
      ```
   * 3. Stage, commit, and push `firmware/binaries/micropython.bin` to main.
+
+* **GA3 Report Automated Evaluation & Anti-Inflation Protocol (Submission 3 / Design Report 2 & Beyond)**:
+
+  * **Strict Prohibition of Half-Band (`+0.5`) Stacking**: Automated rubrics must NEVER combine `+0.5` adjustment items on top of base bands (`Acceptable 2.0` or `Marginal 1.0`). Every question must resolve to exactly one discrete score tier (`3.0`, `2.0`, `1.0`, or `0.0`).
+  * **Target Cohort Mean**: Anchor the grading engine to a standard academic mean of **~65% (`13.0 / 20.0`)**. Standard competent work without exceptional mathematical depth or multi-trial statistical telemetry must receive clean **`2.0 / 3.0`**, reserving `2.5` and `3.0` exclusively for distinction-level Tier A rigor.
+  * **Zero Prompt Instruction Bleed**: Extraction scripts must strip all prompt header text before calculating section character limits to prevent accidental truncation.
+
+* **Controller Robustness & Perturbation Test Suite (`tools/test_robustness.py`)**:
+
+  * **Purpose**: Evaluates student controller disturbance rejection against physical parameter variations (motor gain imbalance $\pm 12\%$, wheel slip $2\dots 10\%$, turn skid, procedural maze topologies) before Gradescope submission.
+  * **Supported Tasks**:
+    * **Task 1 (Milestone 1 / 1m x 1m Square)**: `python tools/test_robustness.py workspace/task1_square/main.py`
+    * **Task 2 (Submission 4 / Autonomous Maze Solver)**: `python tools/test_robustness.py workspace/task2_maze/main.py`
+  * **Dynamic Socket Architecture**: Automatically isolates simulation subprocess ports using `UCT_MICROMOUSE_PORT` and `--port` to prevent bind collisions or race conditions during multi-run batch loops.
+  * **Offline Execution Guard**: Executes in fast-simulation mode with `--headless` and `UCT_OFFLINE_MODE=1` to guarantee fast, deterministic evaluation.
+
+

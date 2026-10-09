@@ -449,20 +449,16 @@ void initVL53L0(VL53L0_t *tof, uint16_t signalRate){
   uint8_t PreRange = 18;
   uint8_t FinalRange = 14;
 
-	// Configure the sensor for high accuracy and speed in 20 cm.
-	if (!setSignalRateLimit(signalRate)) { restartI2C(tof->I2Cx); } // Updated to use uint16_t signalRate
+  // Configure VCSEL pulse periods for enhanced signal sensitivity in maze cells.
+  if (!setSignalRateLimit(signalRate)) { restartI2C(tof->I2Cx); }
   if (!setVcselPulsePeriod(VcselPeriodPreRange, PreRange)) { restartI2C(tof->I2Cx); }
   if (!setVcselPulsePeriod(VcselPeriodFinalRange, FinalRange)) { restartI2C(tof->I2Cx); }
-  // Set timing budget to 100ms (10Hz) to ensure reliable measurements under the long-range profile (PreRange=18, FinalRange=14), falling back to 200ms (5Hz) if needed.
-  if (!setMeasurementTimingBudget(100000)) {
-    if (!setMeasurementTimingBudget(200000)) {
-      restartI2C(tof->I2Cx);
-    }
-  }
+
+  // Start continuous back-to-back ranging (SYSRANGE_START = 0x02).
+  // Operates at the sensor's physical conversion rate (~20 ms / 50 Hz per sensor).
   startContinuous(0);
   setAddress_VL53L0X(tof->Address);
   tof->initialized = 1;
-
 }
 
 void calibrateToF(VL53L0_t* TOF_result , uint16_t distance) {
@@ -537,19 +533,16 @@ void getVL53L0(VL53L0_t* TOF_result){
     return;
   }
 
-  // If the range is valid, update the TOF_result structure
-  if (distanceStr.rangeStatus == RANGECOMPLETE || distanceStr.rangeStatus == NONE) {
-    if (distance < 8000){
-      TOF_result->Distance = distance;
-      TOF_result->Status = distanceStr.rangeStatus;
-      TOF_result->Ambient = distanceStr.Ambient;
-      TOF_result->Signal = distanceStr.Signal;
-    } else {
-      TOF_result->Distance = 8190;
-      TOF_result->Status = distanceStr.rangeStatus;
-    }
+  // Signal check: In open air, ambient SPAD noise produces false ~30-70mm readings with Signal < 150 (~1.17 MCPS).
+  // Real targets have strong laser return signals (Signal >= 150).
+  if ((distanceStr.rangeStatus == RANGECOMPLETE || distanceStr.rangeStatus == NONE) &&
+      distanceStr.Signal >= 150 && distance > 20 && distance < 2000) {
+    TOF_result->Distance = distance;
+    TOF_result->Status = distanceStr.rangeStatus;
+    TOF_result->Ambient = distanceStr.Ambient;
+    TOF_result->Signal = distanceStr.Signal;
   } else {
-    // Ranging failed/timed out (e.g. out of range / open air)
+    // Open air / no target / signal fail -> strictly 8190
     TOF_result->Distance = 8190;
     TOF_result->Status = distanceStr.rangeStatus;
   }

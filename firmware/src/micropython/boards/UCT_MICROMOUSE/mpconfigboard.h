@@ -10,12 +10,19 @@
 #define MICROPY_HW_ENABLE_USB       (1)
 #define MICROPY_HW_ENABLE_DAC       (0)
 
-// MSI clock configuration (boosted to 80 MHz SysClk)
+// HSE clock configuration (8 MHz quartz crystal on PH0/PH1 -> 80 MHz SysClk)
+#define MICROPY_HW_CLK_USE_HSE      (1)
 #define MICROPY_HW_CLK_PLLM         (1)
-#define MICROPY_HW_CLK_PLLN         (40)
+#define MICROPY_HW_CLK_PLLN         (20)
 #define MICROPY_HW_CLK_PLLP         (RCC_PLLP_DIV7)
 #define MICROPY_HW_CLK_PLLQ         (RCC_PLLQ_DIV2)
 #define MICROPY_HW_CLK_PLLR         (RCC_PLLR_DIV2)
+
+// PLLSAI1 configuration (8 MHz HSE * 12 / 2 = 48 MHz for USB and ADC)
+#define MICROPY_HW_CLK_PLLSAIN      (12)
+#define MICROPY_HW_CLK_PLLSAIP      (RCC_PLLP_DIV7)
+#define MICROPY_HW_CLK_PLLSAIQ      (RCC_PLLQ_DIV2)
+#define MICROPY_HW_CLK_PLLSAIR      (RCC_PLLR_DIV2)
 
 #define MICROPY_HW_FLASH_LATENCY    FLASH_LATENCY_4
 
@@ -26,9 +33,9 @@
 #define MICROPY_HW_UART1_TX         (pin_B6)
 #define MICROPY_HW_UART1_RX         (pin_B7)
 
-// REPL is routed over USB Virtual COM Port (CDC VCP) by default
-// #define MICROPY_HW_UART_REPL        PYB_UART_1
-// #define MICROPY_HW_UART_REPL_BAUD   115200
+// REPL is duplicated / routed over USART1 (ST-Link VCP) as well as USB VCP
+#define MICROPY_HW_UART_REPL        PYB_UART_1
+#define MICROPY_HW_UART_REPL_BAUD   115200
 #define MICROPY_HW_ENABLE_UART_DEBUG (1)
 
 // I2C buses (I2C1 for TOF/IMU, I2C2 for OLED/Sensors)
@@ -55,6 +62,8 @@
 
 // USB config
 #define MICROPY_HW_USB_FS           (1)
+#define MICROPY_HW_USB_MSC          (1)
+#define MICROPY_HW_FLASH_MOUNT_AT_BOOT (1)
 
 // Board startup and loop hooks to run the background C-Kernel task
 void board_startup(void);
@@ -65,7 +74,6 @@ void board_start_soft_reset(void);
 #define MICROPY_BOARD_STARTUP       board_startup
 #define MICROPY_BOARD_EARLY_INIT    board_early_init
 #define MICROPY_VM_HOOK_LOOP        kernel_background_tick();
-#define MICROPY_INTERNAL_EVENT_HOOK kernel_background_tick();
 #define MICROPY_BOARD_START_SOFT_RESET(state) board_start_soft_reset()
 
 // Expose the custom uct_mouse module as a built-in module
@@ -73,17 +81,8 @@ extern const struct _mp_obj_module_t uct_mouse_module;
 #define MICROPY_PORT_BUILTIN_MODULES \
     { MP_ROM_QSTR(MP_QSTR_uct_mouse), MP_ROM_PTR(&uct_mouse_module) },
 
-// Enable external SPI flash custom block device
-#define MICROPY_HW_BDEV_IOCTL(op, arg)          uct_bdev_ioctl(op, arg)
-#define MICROPY_HW_BDEV_READBLOCK(dest, bl)     (uct_bdev_readblocks(dest, bl, 1) == 0)
-#define MICROPY_HW_BDEV_WRITEBLOCK(src, bl)     (uct_bdev_writeblocks(src, bl, 1) == 0)
-#define MICROPY_HW_BDEV_READBLOCKS(dest, bl, n) uct_bdev_readblocks(dest, bl, n)
-#define MICROPY_HW_BDEV_WRITEBLOCKS(src, bl, n) uct_bdev_writeblocks(src, bl, n)
-#define MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE (0)
-
-int uct_bdev_ioctl(uint32_t op, uint32_t arg);
-int uct_bdev_readblocks(uint8_t *dest, uint32_t block_num, uint32_t num_blocks);
-int uct_bdev_writeblocks(const uint8_t *src, uint32_t block_num, uint32_t num_blocks);
+// Enable internal flash storage for the MicroPython FAT filesystem (64KB at 0x08060000)
+#define MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE (1)
 
 // Preprocessor overrides to rename core MicroPython interrupt handlers.
 // This allows us to define the actual hardware vectors in our custom board code.

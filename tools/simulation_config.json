@@ -2,44 +2,51 @@
   "robot": {
     "mass": 0.238,
     "axle_half_length": 0.054,
-    "wheel_radius": 0.0325,
+    "wheel_radius": 0.017,
     "collision_radius": 0.070,
-    "ticks_per_rot": 1170.0,
+    "ticks_per_rot": 470.0,
     "total_width": 0.122
   },
   "motor": {
     "max_speed": 0.40,
-    "tau": 0.088,
+    "tau": 0.045,
     "imbalance": 0.08,
     "slip": 0.08,
-    "dead_band_l": 58.0,
-    "dead_band_r": 62.0,
-    "perturb_dead_band_std": 3.0,
+    "dead_band_l": 28.0,
+    "dead_band_r": 28.0,
+    "perturb_dead_band_std": 2.0,
     "perturb_imbalance_std": 0.02,
     "perturb_slip_std": 0.015
   },
   "tof_sensors": [
     {
-      "name": "left",
-      "x": 0.045,
-      "y": 0.02,
-      "theta": 1.5707963267948966
+      "name": "tof_l",
+      "offset_x": 0.050,
+      "offset_y": 0.040,
+      "yaw": 1.5708,
+      "max_range": 2.0,
+      "fov_deg": 25.0
     },
     {
-      "name": "center",
-      "x": 0.055,
-      "y": 0.0,
-      "theta": 0.0
+      "name": "tof_c",
+      "offset_x": 0.065,
+      "offset_y": 0.0,
+      "yaw": 0.0,
+      "max_range": 2.0,
+      "fov_deg": 25.0
     },
     {
-      "name": "right",
-      "x": 0.045,
-      "y": -0.02,
-      "theta": -1.5707963267948966
+      "name": "tof_r",
+      "offset_x": 0.050,
+      "offset_y": -0.040,
+      "yaw": -1.5708,
+      "max_range": 2.0,
+      "fov_deg": 25.0
     }
   ],
   "maze": {
-    "grid_size": 10,
+    "grid_rows": 4,
+    "grid_cols": 6,
     "block_dim": 0.20,
     "wall_thickness": 0.006
   },

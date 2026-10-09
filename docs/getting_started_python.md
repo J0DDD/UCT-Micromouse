@@ -59,18 +59,24 @@ Once MicroPython is flashed, the board acts as a USB storage drive named **`UCT_
    * `README.txt`: General details about the partition.
 
 ### 💾 Flash Filesystem Architecture & Immediate Persistence
-* **Hardware Storage:** Files are stored in a dedicated 128 KB partition on the onboard **SPI NOR Flash** chip (`ZD25WQ80C`).
+
+* **Hardware Storage:** Files are stored in a dedicated 64 KB partition on the internal STM32 MCU Flash (`0x08060000` to `0x0806FFFF`), ensuring identical operation across both 2025 and 2026 boards.
 * **Direct Synchronous Write-Through:** Whenever a file is written or modified, the low-level driver immediately commits and verifies the physical flash sectors. There is no delayed cache, so files are safe from corruption even if power is switched off immediately.
-* **Auto-Format Protection:** The MicroPython C bootloader is strictly configured never to auto-format the external drive on boot, protecting your code from being wiped across power cycles.
+* **Auto-Format Protection:** The MicroPython C bootloader is strictly configured never to auto-format the internal drive on boot unless the partition is completely uninitialized.
 
-### 🔄 First-Time Setup or Formatting the Drive (Factory Reset)
-If you have a brand-new processor board or if the external flash drive ever becomes unformatted or corrupted, you can format it cleanly with one command:
+### 🔄 Formatting the Drive or Restoring Factory Defaults
 
-```bash
-python3 tools/deploy.py --engine micropython --factory-reset
-```
+* **Soft Drive Format (Over USB OTG):** To wipe user scripts from the mounted `UCT_MMOUSE` drive and restore default `boot.py`/`main.py`:
 
-*(Alternatively, from the MicroPython REPL prompt, run `import os, pyb; os.VfsFat.mkfs(pyb.Flash())` to format the partition directly).*
+  ```bash
+  python3 tools/deploy.py --engine micropython --format-drive
+  ```
+
+* **True Hardware Factory Reset (Via ST-Link or DFU):** To completely wipe the microcontroller flash (all firmware, filesystem, and telemetry partitions) and reflash pristine base firmware from a clean slate:
+
+  ```bash
+  python3 tools/deploy.py --engine micropython --factory-reset
+  ```
 
 ---
 

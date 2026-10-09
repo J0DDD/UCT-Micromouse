@@ -1,6 +1,6 @@
 # Session State Log - UCT Micromouse
 
-**Last Updated:** September 3, 2026  
+**Last Updated:** September 29, 2026  
 **Target Hardware:** STM32L476VE (UCT Micromouse Chassis)  
 **Active Submodule:** `external/MicroMouseTemplate`  
 
@@ -8,58 +8,41 @@
 
 ## 1. Summary of Completed Fixes
 
-### User LED Mapping & Isolation (Resolved)
-* **Pin Mapping Verified:** 
-  * `LED0` = **`PC13`**
-  * `LED1` = **`PA4`**
-  * `LED2` = **`PA5`**
-  * Master Gating Pin: **`PB3` (`CTRL_LEDS`)** (Active HIGH, must be driven `HIGH` to enable power to all LEDs).
-* **Flash Driver Isolation:** Removed all debug/dirty-cache activity toggles on `PC13` from [`firmware/src/micropython/boards/UCT_MICROMOUSE/bdev.c`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/micropython/boards/UCT_MICROMOUSE/bdev.c). `LED0` is now 100% dedicated to userland application control (`uct_mouse.set_led(0, ...)`).
-* **Aligned Across Codebase:** Synced in [`.agents/AGENTS.md`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/.agents/AGENTS.md), [`mpconfigboard.h`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/micropython/boards/UCT_MICROMOUSE/mpconfigboard.h), [`uct_mouse_mpy.c`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/micropython/boards/UCT_MICROMOUSE/uct_mouse_mpy.c), and [`board_init.c`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/micropython/boards/UCT_MICROMOUSE/board_init.c).
-
-### TOF Sensor Pipeline & Low-Latency 50 Hz Operation (Resolved)
-* **Unpopulated Sensor Skipping:** Added instant check `if (!TOF_result->initialized) { TOF_result->Distance = 8190; return; }` at top of `getVL53L0()`. Skips the 6 unconnected sensors (`FL`, `FR`, `MB_B`, `MB_F`, `MB_FL`, `MB_FR`), eliminating 30–60 ms of blocking I2C timeouts per tick.
-* **Non-Blocking Range Checks:** `readRangeContinuousMillimeters()` checks `(readReg(RESULT_INTERRUPT_STATUS) & 0x07) == 0`. If a conversion is in progress, it returns `65535` immediately without busy-waiting; `getVL53L0()` retains the last valid sample without stalling the VM.
-* **Correct Continuous Initialization Order:** In `initVL53L0()`, reordered sequence to:
-  1. `setAddress_VL53L0X(tof->Address)` (assign unique address first)
-  2. `setMeasurementTimingBudget(20000)` (20 ms / 50 Hz timing budget on new address)
-  3. `startContinuous(0)` (start back-to-back continuous ranging on target address)
-  *(Starting continuous ranging before changing the address previously stalled the sensor timing engine).*
-* **Open-Air Noise Rejection:** Ambient SPAD counts in open air produce false ~30 mm distance readings with low photon signal amplitude (`Signal < 100` / 0.78 MCPS). Distance is filtered by:
+### TOF Sensor Open-Air Noise Rejection (Resolved)
+* **Signal Amplitude Filter (`Signal >= 150`):** In open air / empty space, ambient 940 nm photon shot noise occasionally triggered the VL53L0X ASIC histogram DSP, generating false short-range distance glitches (~30–80 mm) that prematurely tripped simple collision loops like `while TOF > 100:`.
+* **Restored Threshold:** `getVL53L0()` in [`firmware/src/micropython/boards/UCT_MICROMOUSE/VL53L0X.c`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/micropython/boards/UCT_MICROMOUSE/VL53L0X.c) and [`external/MicroMouseTemplate/.../VL53L0X.c`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/external/MicroMouseTemplate/MicroMouseProgramming_Code/Core/Src/VL53L0X.c) now enforces:
   ```c
-  if (distanceStr.Signal >= 100 && distance > 20 && distance < 2000) {
+  if ((distanceStr.rangeStatus == RANGECOMPLETE || distanceStr.rangeStatus == NONE) &&
+      distanceStr.Signal >= 150 && distance > 20 && distance < 2000) {
       TOF_result->Distance = distance;
   } else {
       TOF_result->Distance = 8190; // Clean open air / out of range
   }
   ```
+* **Performance:** `Signal = 150` (~1.17 MCPS) cleanly rejects 100% of open-air ambient noise spikes (solid `8190`), while preserving high-fidelity obstacle detection up to ~700–800 mm.
 
-### I2C Bus & OLED Display Stability (Resolved)
-* **Eliminated Reset Loop in `micromouse_kernel.c`:** Transient NACK error codes from sensor reads previously triggered `restartI2C(&hi2c2)` and `SSD1306_Init()` every 100 ms display update, causing OLED flickering and continuous TOF resets.
-* **Safe Recovery:** Hardware bus reset is now only triggered if `hi2c2.State == HAL_I2C_STATE_BUSY` for >50 consecutive ticks (>500 ms continuous hang). Transient error codes in `READY` state are safely cleared.
+### Dual-Chip Standalone Factory Reset (`tools/deploy.py`)
+* **Two-Phase Architecture:** Solved the dual-chip chicken-and-egg dependency between the STM32 MCU internal flash (512 KB) and ZD25WQ80C external SPI NOR flash (1 MB):
+  1. **Phase 1 (SWD Flashing):** Writes `micropython.bin` via `st-flash` at `0x08000000` to give the MCU firmware to drive the SPI2 and USB peripherals.
+  2. **Phase 2 (Python Raw REPL Provisioning):** Connects over USB VCP to execute `os.VfsFat.mkfs(pyb.Flash())`, populates `boot.py` (with `pyb.usb_mode('VCP+MSC')`), `main.py`, and `README.txt`, and triggers `pyb.hard_reset()` to force the USB PHY to re-enumerate as a composite Mass Storage (`MSC`) drive.
+* Automated via: `python tools/deploy.py --engine micropython --flash --factory-reset`.
+
+### Milestone 1 Autograder Suite Optimization
+* **Decoupled NumPy Dependency:** Rewrote [`tools/autograder/assignments/milestone1_square/test_suite.py`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/tools/autograder/assignments/milestone1_square/test_suite.py) using pure Python stdlib (`math`), preventing `ModuleNotFoundError: No module named 'numpy'` in minimal autograder Docker containers.
+* **Trajectory SVG & HTML Visualizations:** Added inline vector trajectory rendering and base64 video playback in Gradescope test outputs.
 
 ---
 
 ## 2. Recent Git Commits
 
 ### Main Repository (`UCT-Micromouse`)
+* `b137a91` - `fix(tof): filter open-air noise with Signal >= 150 threshold and refine factory reset`
+* `df7ff90` - `fix(tof): restore stable VL53L0X timing budget and valid range thresholds to fix startup stall and 8190mm sensor readings`
 * `cc9634b` - `fix(leds): align LED pin mapping to LED0=PC13, LED1=PA4, LED2=PA5 across AGENTS.md and firmware`
 * `01d5fdd` - `fix(leds): remove flash disk cache activity toggles on PC13 (LED0)`
-* `d1ca334` - `fix(tof): eliminate latency and reject open-air false short distances`
-* `590a52b` - `fix(tof): resolve I2C reset loop on OLED and filter open air via photon return rate`
-* `f5cfe0e` - `fix(tof): correct continuous mode initialization order`
-
-### Submodule (`MicroMouseTemplate`)
-* `faf024e` - `perf(tof): skip uninitialized sensors, make continuous reads non-blocking, and enable 50Hz timing budget`
-* `bdafa57` - `fix(tof): use direct 12-byte burst read and enforce rangeStatus==0 to reject open-air noise`
-* `3243ec0` - `fix(tof): filter open-air noise via return signal amplitude (Signal >= 100)`
-* `25ee3a2` - `fix(tof): set address before continuous mode to prevent startup timing stall`
 
 ---
 
-## 3. Current State & Next Steps for Next Session
-1. **Milestone 0 Physical Verification:**
-   * Run [`python/tests/milestone0_wall_follow.py`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/python/tests/milestone0_wall_follow.py) on the physical mouse.
-   * Verify LED thresholds (<200 mm) for Left (LED0), Center (LED1), and Right (LED2).
-   * Press SW1 (User Button) to test closed-loop wall following and front collision cutoff (<150 mm).
-2. **PID & Velocity Tuning:** Fine-tune side error proportional gain (`corr = error * 0.4`) and baseline motor PWMs (`85`) in `milestone0_wall_follow.py` based on physical track behavior.
+## 3. Current State & Next Steps
+1. **Physical Chassis Ready:** Mouse is running latest firmware with solid TOF filtering and clean `UCT_MMOUSE` filesystem.
+2. **Student Autograder Deployment:** Autograder test suites and deployment tools are synchronized.

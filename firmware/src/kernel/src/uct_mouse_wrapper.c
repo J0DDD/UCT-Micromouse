@@ -91,17 +91,23 @@ void uct_mouse_dump_logs(PikaObj *self) {
     kernel_logger_dump();
 }
 
+#include "LEDs.h"
 void uct_mouse_set_led(PikaObj *self, int led_idx, int state) {
     // PB3 (CTRL_LEDS) must be set high to enable LEDs
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
     
     GPIO_PinState pin_state = state ? GPIO_PIN_SET : GPIO_PIN_RESET;
     if (led_idx == 0) {
+        LED0.state = state ? 1 : 0;
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, pin_state);
     } else if (led_idx == 1) {
+        LED1.state = state ? 1 : 0;
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, pin_state);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, pin_state);
     } else if (led_idx == 2) {
+        LED2.state = state ? 1 : 0;
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, pin_state);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, pin_state);
     }
 }
 

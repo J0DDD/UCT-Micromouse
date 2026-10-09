@@ -131,20 +131,28 @@ To satisfy the ECSA Graduate Attribute 3 (Design) accreditation portfolio, you m
 *   **Assessment & Passing Criteria:** Evaluated against the ECSA GA3 Design rubric. Must demonstrate a structured design brief (3.1), alternative evaluations (3.2), and first-principles modeling (3.3).
 
 ### **Submission 3: GA3 Design Report 2 (30%)**
-*   **Task:** A second formal engineering design report (in PDF format) documenting your sensor filters, mapping state flows, routing pathfinders, or visual programming interfaces from Milestone 2.
+*   **Task:** A second formal engineering design report (submitted directly via the **Gradescope Online Assignment** interface) documenting your sensor filters, mapping state flows, routing pathfinders, or visual programming interfaces from Milestone 2.
 *   **Assessment & Passing Criteria:** Evaluated against the ECSA GA3 Design rubric. Must demonstrate implementation testing (3.4) and critical evaluation (3.5). One resubmission of this report is permitted if required to demonstrate Graduate Attribute competence.
 
 ### **Submission 4: Final Maze Solver Code & Demo (25%)**
-*   **Task:** Navigate a virtual/physical mouse to explore a 4x6 grid maze, map wall configurations, compute the shortest path, and run from start to target at high speed.
+*   **Task:** Navigate a virtual/physical mouse through the 4-stage autonomous mission on a **4 rows $\times$ 6 columns** maze ($0.8\text{ m} \times 1.2\text{ m}$):
+    1. **Phase 1 (Exploration):** Autonomously explore from `(0,0)` (facing East) to discover the 2x2 target plaza (defined as 4 contiguous cells with all 4 internal dividing walls open).
+    2. **Phase 2 (Target Recognition):** Upon confirming the 2x2 target room, execute an on-the-spot $360^\circ$ clockwise pirouette inside the room.
+    3. **Phase 3 (Return to Start):** Compute the optimal shortest path and navigate back to `(0,0)`, facing East.
+    4. **Phase 4 (High-Speed Sprint):** Pause 3.0 seconds, then sprint along the shortest path directly into the target room.
+*   **Championship Scalability:** In the final week championship tournament, robots will compete on an expanded maze (e.g. 8x8 or 10x10). Ensure your `MazeSolver` dynamically parameterizes grid dimensions (`MAZE_ROWS`, `MAZE_COLS`) rather than hardcoding constants!
 *   **Assessment & Grading Metric:** The milestone mark is split as **60% Autograded Trajectory**, **30% Tutor Physical Run Evaluation**, and **10% Submission Compliance** (proper files and student card shown).
-    *   *Autograder Score (100 pts max):* Checked in procedurally generated mazes. Completes automatically when the mouse stops for 3.0s:
-        *   **Exploration Progress (80 pts max):** Graded proportionally based on the closest distance achieved to the maze center zone $(1.0, 1.0)$. Reaching the center zone awards the full 80 pts.
-        *   **Speed Run Bonus (20 pts max):** Unlocked if center is reached. Scales continuously from 20 pts (time $\le 30$s) to 0 pts (time $\ge 90$s).
-        *   *Penalties:* -10 pts for timeout (90s limit); Wall contact immediately halts the simulation, naturally capping the score.
-    *   *Physical Run (30%):* Tutor evaluation of active wall-centering, mapping, shortest-path solving, and speed run.
+    *   *Autograder Score (100 pts max):* Checked in procedurally generated 4x6 virtual mazes under physical perturbations:
+        *   **Target Room Discovery (30 pts):** Successfully navigating into the 2x2 target room during exploration.
+        *   **Recognition Pirouette (20 pts):** Executing the $360^\circ$ clockwise spin inside the target room.
+        *   **Return to Start (20 pts):** Navigating back and stopping at starting cell `(0,0)`.
+        *   **High-Speed Sprint (20 pts):** Sprinting from `(0,0)` directly back into the target room.
+        *   **Speed Run Bonus (10 pts):** Scales continuously based on total elapsed mission time ($\le 35\text{s} = 10\text{ pts}$, $35\text{s} < t \le 120\text{s} = 10 \rightarrow 0\text{ pts}$).
+        *   *Penalties:* -10 pts for timeout (120s limit); Wall contact immediately halts the simulation.
+    *   *Physical Run (30%):* Tutor evaluation of the 4-stage mission on the physical 4x6 board.
     *   *Compliance (10%):* Legible 3s student card close-up (5%) and code-telemetry log zip formatting (5%).
 
-*   *Note on Grading Thresholds:* The grading thresholds, coefficients, and parameter metrics detailed in this handbook serve as baseline targets. Course staff reserve the right to tailor or adjust specific parameters post-submission to ensure final grades remain highly representative of actual design and hardware performance.
+*   *Note on Grading Adaptation & Post-Submission Stress Testing:* While public baseline tests are provided during development to verify fundamental mission flow, final autograding is conducted against a suite of randomized hidden stress tests (evaluating motor imbalances, surface traction slip, IMU noise, and alternate maze layouts) to evaluate true closed-loop robustness and avoid overtraining. The grading thresholds, coefficients, and parameter metrics detailed in this handbook serve as baseline targets; course staff reserve the right to tailor, recalibrate, or adjust specific parameters post-submission to ensure final grades achieve a fair and representative spread reflecting actual engineering design performance.
 
 
 ---

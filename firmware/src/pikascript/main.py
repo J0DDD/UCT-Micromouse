@@ -1,94 +1,52 @@
+# =========================================================================
+# UCT Micromouse - Live Multi-Sensor & ToF Signal Diagnostics
+# =========================================================================
+# Demonstrates:
+#   1. uct_mouse.get_tof()         -> Default reliable filtered distances (mm)
+#   2. uct_mouse.get_tof_raw()     -> Unfiltered raw distances (mm)
+#   3. uct_mouse.get_tof_signals() -> Return signal strength in kcps
+#   4. uct_mouse.display_text()    -> Live multi-line OLED telemetry
+# =========================================================================
+
 import uct_mouse
+import time
 
-print("Initializing Micromouse API...")
-uct_mouse.init()
+def main():
+    if not uct_mouse.init():
+        print("Error: uct_mouse.init() failed.")
+        return
 
-# Ensure motors and LEDs are stopped initially
-uct_mouse.set_motors(0, 0)
-uct_mouse.set_led(0, 0)
-uct_mouse.set_led(1, 0)
-uct_mouse.set_led(2, 0)
+    print("==================================================")
+    print("  UCT Micromouse: Live ToF & Signal Diagnostics   ")
+    print("==================================================")
+    print("Format: [Sensor] Filtered(mm) | Raw(mm) | Signal(kcps)")
 
-print("Running Milestone 0 LED range test. Press SW1 (User Button) to start wall-following.")
+    count = 0
+    while True:
+        # 1. Read all three ToF telemetry streams
+        tof_filt = uct_mouse.get_tof()
+        tof_raw  = uct_mouse.get_tof_raw()
+        tof_sig  = uct_mouse.get_tof_signals()
+        
+        # 2. Extract Center, Left, Right
+        l_f, fl_f, c_f, fr_f, r_f = tof_filt
+        l_r, fl_r, c_r, fr_r, r_r = tof_raw
+        l_s, fl_s, c_s, fr_s, r_s = tof_sig
+        
+        # 3. Print periodically to Serial REPL
+        if count % 5 == 0:
+            print(f"C: {c_f:4d} mm (raw:{c_r:4d}, sig:{c_s:4d} kcps) | "
+                  f"L: {l_f:4d} (sig:{l_s:3d}) | R: {r_f:4d} (sig:{r_s:3d})")
 
-is_wall_following = 0
-side = 0
-target_dist = 0
+        # 4. Update OLED Display
+        # Row 0 is kept as default ('MicroPython')
+        # Rows 1-3 display live readings
+        uct_mouse.display_text(1, f"C: {c_f}mm ({c_s}k)")
+        uct_mouse.display_text(2, f"L:{l_f} R:{r_f}")
+        uct_mouse.display_text(3, f"Raw C:{c_r}mm")
+        
+        uct_mouse.delay_ms(100)
+        count += 1
 
-while True:
-    # Read TOF sensors
-    tof = uct_mouse.get_tof()
-    tof_l = tof[0]
-    tof_c = tof[2]
-    tof_r = tof[4]
-    
-    # Always run LED Range Test
-    val0 = 0
-    if tof_l < 200:
-        val0 = 1
-    uct_mouse.set_led(0, val0)
-
-    val1 = 0
-    if tof_c < 200:
-        val1 = 1
-    uct_mouse.set_led(1, val1)
-
-    val2 = 0
-    if tof_r < 200:
-        val2 = 1
-    uct_mouse.set_led(2, val2)
-    
-    # Check if button is pressed (SW1 returns 1 when pressed)
-    if is_wall_following == 0:
-        btn_pressed = uct_mouse.get_button()
-        if btn_pressed == 1:
-            print("SW1 Pressed! Initiating wall-following...")
-            # Decide side to follow based on closer wall
-            if tof_l < tof_r:
-                side = 1
-                target_dist = tof_l
-                print("Following LEFT wall")
-            else:
-                side = 2
-                target_dist = tof_r
-                print("Following RIGHT wall")
-            is_wall_following = 1
-            # Debounce delay
-            uct_mouse.delay_ms(200)
-
-    if is_wall_following == 1:
-        # Check for collision front wall
-        if tof_c < 150:
-            print("Front obstacle detected! Stopping wall-following.")
-            uct_mouse.set_motors(0, 0)
-            is_wall_following = 0
-            # Debounce delay to prevent immediate re-trigger
-            uct_mouse.delay_ms(500)
-            
-        # Drive straight, correcting distance to side wall
-        if is_wall_following == 1:
-            if side == 1:
-                error = target_dist - tof_l
-                corr = error * 0.4
-                l_pwm = int(85 + corr)
-                r_pwm = int(85 - corr)
-            else:
-                error = target_dist - tof_r
-                corr = error * 0.4
-                l_pwm = int(85 - corr)
-                r_pwm = int(85 + corr)
-                
-            # Clamp PWM values to safe limits
-            if l_pwm < 75:
-                l_pwm = 75
-            if l_pwm > 100:
-                l_pwm = 100
-            if r_pwm < 75:
-                r_pwm = 75
-            if r_pwm > 100:
-                r_pwm = 100
-            
-            uct_mouse.set_motors(l_pwm, r_pwm)
-
-    # Call delay_ms to keep C kernel tick active and allow background VCP commands to process
-    uct_mouse.delay_ms(50)
+if __name__ == "__main__":
+    main()

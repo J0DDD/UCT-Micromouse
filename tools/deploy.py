@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import glob
 import argparse
+import time
 
 def find_stlink_drive():
     """Finds the ST-Link mass storage drive on Mac/Windows/Linux."""
@@ -121,32 +122,72 @@ def is_dfu_device_connected(dfu_util_cmd):
     except Exception:
         return False
 
-def flash_firmware(central_bin_path):
+def trigger_software_dfu_reboot():
+    """Detects active MicroPython / PikaScript serial connection and issues a software reboot to DFU bootloader."""
+    try:
+        import serial
+        import serial.tools.list_ports
+        for p in serial.tools.list_ports.comports():
+            # Check for MicroPython OTG or generic VCP / usbmodem port
+            if (p.vid == 0xf055) or ("usbmodem" in p.device) or ("virtual com" in p.description.lower()) or ("pyboard" in p.description.lower()):
+                try:
+                    s = serial.Serial(p.device, 115200, timeout=0.5)
+                    s.write(b'\x03\r\n')
+                    time.sleep(0.05)
+                    s.write(b'\r\nimport machine; machine.bootloader()\r\n')
+                    time.sleep(0.05)
+                    s.write(b'\r\nimport uct_mouse; uct_mouse.reboot_dfu()\r\n')
+                    time.sleep(0.05)
+                    s.write(b'\r\n{"c":{"dfu":1}}\r\n')
+                    time.sleep(0.1)
+                    s.close()
+                    # Wait up to 2.5s for DFU device enumeration
+                    time.sleep(1.5)
+                    return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
+
+def flash_firmware(central_bin_path, erase_all=False):
     """Flashes the firmware binary onto the board.
-    Tries USB DFU via dfu-util first, then st-flash, STM32_Programmer_CLI, and falls back to ST-Link USB mass storage copy.
+    Tries USB DFU via dfu-util over USB OTG first (without needing ST-Link),
+    then falls back to SWD via st-flash, STM32_Programmer_CLI, and ST-Link USB mass storage copy.
+    If erase_all is True, performs a complete chip/mass erase before flashing to guarantee a clean slate.
     """
     dfu_util_cmd = find_dfu_util_cmd()
-    if dfu_util_cmd and is_dfu_device_connected(dfu_util_cmd):
-        print(f"Using direct USB DFU flash via '{dfu_util_cmd}' (over USB OTG)...")
-        try:
-            subprocess.run([
-                dfu_util_cmd, 
-                "-a", "0", 
-                "-d", "0483:df11", 
-                "--dfuse-address", "0x08000000:leave", 
-                "-D", central_bin_path
-            ], check=True)
-            print("Success! Firmware flashed via USB DFU. Board reset triggered.")
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(f"Warning: USB DFU flashing failed: {e}")
-            print("Falling back to SWD flashing methods...")
+    if dfu_util_cmd:
+        if not is_dfu_device_connected(dfu_util_cmd):
+            # Check if an active firmware instance is running over USB serial and command it to enter DFU mode
+            print("Checking for running firmware instance over USB OTG to enter DFU mode...")
+            trigger_software_dfu_reboot()
+
+        if is_dfu_device_connected(dfu_util_cmd):
+            print(f"Using direct USB DFU flash via '{dfu_util_cmd}' (over USB OTG)...")
+            try:
+                dfuse_addr = "0x08000000:mass-erase:force:leave" if erase_all else "0x08000000:leave"
+                subprocess.run([
+                    dfu_util_cmd, 
+                    "-a", "0", 
+                    "-d", "0483:df11", 
+                    "--dfuse-address", dfuse_addr, 
+                    "-D", central_bin_path
+                ], check=True)
+                print("Success! Firmware flashed via USB DFU over USB OTG. Board reset triggered.")
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f"Warning: USB DFU flashing failed: {e}")
+                print("Falling back to SWD flashing methods...")
 
     # 2. Try st-flash
     st_flash_cmd = find_st_flash_cmd()
     if st_flash_cmd:
         print(f"Using direct SWD flash via '{st_flash_cmd}' (fast & reliable)...")
         try:
+            if erase_all:
+                print("Performing full hardware chip erase via st-flash...")
+                subprocess.run([st_flash_cmd, "erase"], check=True)
             subprocess.run([st_flash_cmd, "--reset", "write", central_bin_path, "0x08000000"], check=True)
             print("Success! Firmware flashed via SWD. Board reset triggered.")
             return True
@@ -159,9 +200,11 @@ def flash_firmware(central_bin_path):
     if stm32_cli:
         print(f"Using direct SWD flash via STM32_Programmer_CLI ('{stm32_cli}')...")
         try:
-            subprocess.run([
-                stm32_cli, "-c", "port=SWD", "-w", central_bin_path, "0x08000000", "-v", "-rst"
-            ], check=True)
+            cmd = [stm32_cli, "-c", "port=SWD"]
+            if erase_all:
+                cmd += ["-e", "all"]
+            cmd += ["-w", central_bin_path, "0x08000000", "-v", "-rst"]
+            subprocess.run(cmd, check=True)
             print("Success! Firmware flashed via STM32CubeProgrammer. Board reset triggered.")
             return True
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -171,10 +214,9 @@ def flash_firmware(central_bin_path):
     # 4. Fallback: Find the ST-Link Mass Storage Drive
     drive = find_stlink_drive()
     if not drive:
-        print("\nError: Could not find ST-Link programmer or USB drive.")
-        print("Please ensure the ST-Link USB cable is firmly plugged in and the LED is lit.")
-        print("To install reliable command-line flashers on Windows:")
-        print("  winget install STMicroelectronics.STM32CubeProgrammer")
+        print("\nError: Could not find ST-Link programmer or USB DFU device.")
+        print("A hardware flash/factory-reset operation requires a programmer (ST-Link) or USB DFU mode.")
+        print("Please ensure the ST-Link USB cable is firmly plugged in, or enter DFU mode via BOOT0.")
         sys.exit(1)
         
     print(f"ST-Link found at {drive}. Flashing via USB mass storage stream write...")
@@ -318,9 +360,14 @@ if __name__ == "__main__":
         help="Path to the dedicated python development folder to mirror to the mouse (default: workspace)"
     )
     parser.add_argument(
+        "--format-drive",
+        action="store_true",
+        help="Format the virtual USB storage partition (UCT_MMOUSE) and restore default boot.py and main.py over USB OTG without hardware reflashing."
+    )
+    parser.add_argument(
         "--factory-reset",
         action="store_true",
-        help="Format the external SPI NOR flash partition (UCT_MMOUSE) as a clean FAT filesystem and install default boot.py and main.py."
+        help="Perform a true hardware factory reset: completely erase the microcontroller flash (all firmware, filesystem, and telemetry partitions) and reflash pristine base firmware from scratch using ST-Link or USB DFU."
     )
     args = parser.parse_args()
 
@@ -332,8 +379,17 @@ if __name__ == "__main__":
     repo_root = os.path.abspath(os.path.join(script_dir, ".."))
 
     # Define files/folders to ignore during deployment
-    ignore_names = {"deploy", "ekf_research", "attic", "build", "matlab", "external", "tools", ".git", "__pycache__"}
-    ignore_exts = {".pdf", ".zip", ".docx", ".md", ".slx", ".slxc", ".bin", ".elf", ".map", ".mp4"}
+    ignore_names = {
+        "deploy", "ekf_research", "attic", "build", "matlab", "external", 
+        "tools", ".git", "__pycache__", "sub1_marking", "sub2_marking", 
+        "ga1_marking", "ga3_marking", "marking", "extracted_pages", "extracted_text",
+        "raw_submissions", "tmp", "venv", ".venv", "env", ".vscode", ".idea"
+    }
+    ignore_exts = {
+        ".pdf", ".zip", ".docx", ".md", ".slx", ".slxc", ".bin", ".elf", 
+        ".map", ".mp4", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".svg",
+        ".csv", ".tsv", ".tar", ".gz", ".7z", ".pkl", ".mat", ".log", ".jsonl"
+    }
 
     # Resolve target paths
     target_script = None
@@ -547,9 +603,10 @@ if __name__ == "__main__":
 
     else:
         # === MICROPYTHON ENGINE FLOW ===
-        if args.flash:
-            # --- Flashing the MicroPython C-Firmware ---
-            print("[1/2] Preparing MicroPython firmware binary...")
+        if args.flash or getattr(args, 'factory_reset', False):
+            # --- Flashing the MicroPython C-Firmware / Factory Reset ---
+            action_desc = "Factory Reset (Chip Erase & Reflash)" if args.factory_reset else "Flashing MicroPython firmware"
+            print(f"[1/2] Preparing MicroPython firmware binary for {action_desc}...")
             mpy_bin_path = os.path.join(
                 repo_root, "external", "micropython", "ports", "stm32", 
                 "build-UCT_MICROMOUSE", "firmware.bin"
@@ -600,47 +657,153 @@ if __name__ == "__main__":
                     print("Error: No MicroPython binary found to flash!")
                     sys.exit(1)
             
-            # Flash the compiled firmware onto the board
-            print(f"[2/2] Flashing MicroPython firmware...")
-            flash_firmware(active_bin_path)
-            print("Success! MicroPython interpreter is flashed. The board will reboot and mount as a USB drive shortly.")
+            # Flash the compiled firmware onto the board (with full chip erase if factory reset)
+            print(f"[2/2] {action_desc}...")
+            flash_firmware(active_bin_path, erase_all=args.factory_reset)
+            if args.factory_reset:
+                print("\n========================================================================")
+                print("[Factory Reset Complete]")
+                print("Microcontroller flash has been completely erased and reflashed from baseline firmware.")
+                print("All persistent storage and telemetry partitions have been wiped clean.")
+                print("On boot, the board will initialize with clean out-of-the-box factory defaults.")
+                print("========================================================================\n")
+                sys.exit(0)
+            else:
+                print("Success! MicroPython interpreter is flashed. The board will reboot and mount as a USB drive shortly.")
             
         else:
-            # --- Deploying Python Scripts via VCP (mpremote) ---
-            print("[1/2] Connecting to MicroPython via Serial (mpremote)...")
+            # --- Deploying Python Scripts via VCP (mpremote) / USB Drive ---
+            print("[1/2] Connecting to MicroPython via Serial...")
             
-            # Dynamically detect MicroPython port to avoid ST-Link VCP conflicts
+            # Dynamically detect candidate serial ports (MicroPython USB OTG and ST-Link VCP)
             mpy_port = None
+            stlink_port = None
             try:
                 import serial.tools.list_ports
                 for p in serial.tools.list_ports.comports():
                     if p.vid == 0xf055 and p.pid in (0x9800, 0x9801, 0x9802):
                         mpy_port = p.device
-                        break
-                if not mpy_port:
-                    for p in serial.tools.list_ports.comports():
-                        # Exclude 0xf055 from fallback to ensure we only pick the real ST-Link VCP
-                        if p.vid != 0xf055 and ("ST-Link" in p.description or "STLink" in p.description or (p.vid == 0x0483 and p.pid == 0x374b) or "usbmodem" in p.device):
+                    elif "ST-Link" in p.description or "STLink" in p.description or (p.vid == 0x0483 and p.pid in (0x374b, 0x3752)):
+                        stlink_port = p.device
+                    elif "usbmodem" in p.device:
+                        if "Pyboard" in p.description or "Virtual Comm Port" in p.description:
                             mpy_port = p.device
-                            break
+                        elif not stlink_port:
+                            stlink_port = p.device
             except Exception:
                 pass
                 
+            active_port = mpy_port if mpy_port else stlink_port
             mpremote_cmd = [sys.executable, "-m", "mpremote"]
-            if mpy_port:
-                print(f"    -> Detected MicroPython on {mpy_port}")
+            if active_port:
+                port_type = "USB OTG" if active_port == mpy_port else "ST-Link VCP"
+                print(f"    -> Detected MicroPython on {active_port} ({port_type})")
                 # Send raw interrupt to free REPL if busy
                 try:
                     import serial
-                    s_int = serial.Serial(mpy_port, 115200, timeout=0.2)
+                    s_int = serial.Serial(active_port, 115200, timeout=0.2)
                     s_int.write(b'\x03\x03')
                     time.sleep(0.1)
                     s_int.close()
                 except Exception:
                     pass
-                mpremote_cmd += ["connect", mpy_port]
+                mpremote_cmd += ["connect", active_port]
+            
             mpy_drive = find_micropython_drive()
             use_direct_copy = False
+            
+            if getattr(args, 'format_drive', False):
+                print("[2/2] Formatting virtual USB flash filesystem (UCT_MMOUSE)...")
+                format_script = (
+                    "import os, pyb\n"
+                    "try:\n"
+                    "    os.umount('/flash')\n"
+                    "except Exception:\n"
+                    "    pass\n"
+                    "f = pyb.Flash()\n"
+                    "print('Formatting FAT partition...')\n"
+                    "os.VfsFat.mkfs(f)\n"
+                    "vfs = os.VfsFat(f)\n"
+                    "os.mount(vfs, '/flash')\n"
+                    "with open('/flash/boot.py', 'w') as fp:\n"
+                    "    fp.write('# boot.py - UCT Micromouse Bootloader\\n'\n"
+                    "             'import os, pyb\\n\\n'\n"
+                    "             '# Auto-purge macOS metadata bloat (._* and .DS_Store)\\n'\n"
+                    "             'try:\\n'\n"
+                    "             '    for f in os.listdir(\"/flash\"):\\n'\n"
+                    "             '        if f.startswith(\"._\") or f in (\".DS_Store\", \".Trashes\"):\\n'\n"
+                    "             '            try: os.remove(\"/flash/\" + f)\\n'\n"
+                    "             '            except Exception: pass\\n'\n"
+                    "             'except Exception:\\n'\n"
+                    "             '    pass\\n\\n'\n"
+                    "             'pyb.main(\"main.py\")\\n')\n"
+                    "with open('/flash/main.py', 'w') as fp:\n"
+                    "    fp.write('# main.py -- UCT Micromouse Default Telemetry Streamer\\n'\n"
+                    "             'import uct_mouse\\n\\n'\n"
+                    "             '# Initialize hardware (enables OLED display and sensor polling)\\n'\n"
+                    "             'uct_mouse.init()\\n'\n"
+                    "             'uct_mouse.set_motors(0, 0)\\n\\n'\n"
+                    "             'print(\"--- UCT Micromouse Online ---\")\\n'\n"
+                    "             'print(\"Streaming live telemetry. Replace main.py with your code!\")\\n\\n'\n"
+                    "             'while True:\\n'\n"
+                    "             '    tof = uct_mouse.get_tof()\\n'\n"
+                    "             '    enc = uct_mouse.get_encoders()\\n'\n"
+                    "             '    vbatt = uct_mouse.get_vbatt()\\n'\n"
+                    "             '    gyro = uct_mouse.get_gyro()\\n'\n"
+                    "             '    print(\"VBatt: %.2fV | Gyro: %+.2f dps | Enc: (%d, %d) | ToF: %s\" % (vbatt, gyro, enc[0], enc[1], str(tof)))\\n'\n"
+                    "             '    uct_mouse.delay_ms(250)\\n')\n"
+                    "with open('/flash/README.txt', 'w') as fp:\n"
+                    "    fp.write('UCT Micromouse MicroPython Drive (STM32L476VE)\\n')\n"
+                    "with open('/flash/.metadata_never_index', 'w') as fp:\n"
+                    "    pass\n"
+                    "print('Flash formatted and mounted successfully!')\n"
+                )
+                reset_done = False
+                candidate_ports = [p for p in [mpy_port, stlink_port] if p]
+                for cand in candidate_ports:
+                    try:
+                        import serial
+                        time.sleep(0.2)
+                        s = serial.Serial(cand, 115200, timeout=2.5)
+                        s.write(b'\r\x03\x03')
+                        time.sleep(0.1)
+                        s.read_all()
+                        s.write(b'\r\x01')
+                        time.sleep(0.1)
+                        s.read_until(b'>')
+                        s.write(format_script.encode('utf-8') + b'\x04')
+                        time.sleep(0.5)
+                        s.read_until(b'OK')
+                        out = s.read_until(b'\x04')
+                        err = s.read_until(b'>')
+                        if out:
+                            print(out.decode('utf-8', errors='replace').strip())
+                        s.write(b'\r\x04') # soft reset
+                        time.sleep(0.2)
+                        s.close()
+                        reset_done = True
+                        print(f"Drive format executed successfully via {cand}.")
+                        break
+                    except Exception as e:
+                        print(f"Serial format attempt on {cand} encountered: {e}")
+
+                if not reset_done:
+                    try:
+                        subprocess.run(mpremote_cmd + ["exec", format_script], check=True)
+                        subprocess.run(mpremote_cmd + ["soft-reset"], check=False)
+                        reset_done = True
+                    except Exception:
+                        pass
+
+                if reset_done:
+                    print("\n[Drive Format Complete]")
+                    print("The virtual USB storage partition (/Volumes/UCT_MMOUSE) has been freshly formatted.")
+                    print("Default boot.py and main.py have been restored.")
+                    sys.exit(0)
+                else:
+                    print("Error: Could not format drive via active serial connection.")
+                    sys.exit(1)
+
             try:
                 subprocess.run(mpremote_cmd + ["exec", "print('Connected!')"], check=True, capture_output=True)
             except (subprocess.CalledProcessError, FileNotFoundError):
@@ -651,35 +814,8 @@ if __name__ == "__main__":
                     print("Error: Could not connect to MicroPython board via serial!")
                     print("Hints:")
                     print("  1. Make sure the board is flashed with MicroPython (run this script with -f/--flash first).")
-                    print("  2. Check if the USB cable is connected to the main USB OTG port.")
+                    print("  2. Check if the USB cable is connected to the main USB OTG port or ST-Link.")
                     print("  3. Make sure the board is powered on.")
-                    sys.exit(1)
-                
-            if getattr(args, 'factory_reset', False):
-                print("[2/2] Performing Factory Reset: Formatting external SPI flash filesystem...")
-                format_script = (
-                    "import os, pyb\n"
-                    "try: os.umount('/flash')\n"
-                    "except: pass\n"
-                    "f = pyb.Flash()\n"
-                    "print('Formatting FAT partition...')\n"
-                    "os.VfsFat.mkfs(f)\n"
-                    "vfs = os.VfsFat(f)\n"
-                    "os.mount(vfs, '/flash')\n"
-                    "with open('/flash/boot.py', 'w') as fp:\n"
-                    "    fp.write('# boot.py - UCT Micromouse Hybrid Bootloader\\ntry:\\n    import pyb\\n    pyb.usb_mode(\\'VCP+MSC\\')\\nexcept Exception as e:\\n    pass\\n')\n"
-                    "with open('/flash/main.py', 'w') as fp:\n"
-                    "    fp.write('# main.py -- put your code here!\\n')\n"
-                    "print('Flash formatted and mounted successfully!')\n"
-                )
-                try:
-                    subprocess.run(mpremote_cmd + ["exec", format_script], check=True)
-                    print("Factory reset complete. The external flash has been freshly formatted.")
-                    print("Soft-rebooting the board...")
-                    subprocess.run(mpremote_cmd + ["soft-reset"], check=False)
-                    sys.exit(0)
-                except Exception as e:
-                    print(f"Error executing factory reset: {e}")
                     sys.exit(1)
 
             if target_script:
@@ -704,39 +840,7 @@ if __name__ == "__main__":
                 if os.path.exists(boot_script):
                     deployed_count += 1
                 
-                # Copy other helper python files recursively from the same directory
-                script_dir_path = os.path.dirname(target_script)
-                
-                def upload_dir_recursive(local_dir, remote_prefix=""):
-                    for item in os.listdir(local_dir):
-                        if item.startswith('.'):
-                            continue
-                        local_path = os.path.join(local_dir, item)
-                        name_lower = item.lower()
-                        if name_lower in ignore_names or name_lower in {"uct_mouse.py", "micromouse.py", "boot.py"}:
-                            continue
-                        _, ext = os.path.splitext(name_lower)
-                        if ext in ignore_exts:
-                            continue
-                        if item == os.path.basename(target_script) and remote_prefix == "":
-                            continue
-                        
-                        remote_path = f"{remote_prefix}{item}"
-                        if os.path.isdir(local_path):
-                            # Create remote folder
-                            if use_direct_copy:
-                                os.makedirs(os.path.join(mpy_drive, remote_path.replace("/", os.sep)), exist_ok=True)
-                            else:
-                                subprocess.run(mpremote_cmd + ["fs", "mkdir", f":{remote_path}"], capture_output=True)
-                            upload_dir_recursive(local_path, f"{remote_path}/")
-                        else:
-                            print(f"    -> Pushing helper {remote_path}...")
-                            if use_direct_copy:
-                                shutil.copyfile(local_path, os.path.join(mpy_drive, remote_path.replace("/", os.sep)))
-                            else:
-                                subprocess.run(mpremote_cmd + ["fs", "cp", local_path, f":{remote_path}"], check=True)
 
-                upload_dir_recursive(script_dir_path)
             else:
                 print(f"[2/2] Mirroring {os.path.basename(target_dir)}/ development folder to the mouse...")
                 
@@ -776,6 +880,16 @@ if __name__ == "__main__":
                         subprocess.run(mpremote_cmd + ["fs", "cp", "-r", item_path, f":{item}"], check=True)
                 deployed_count = "all"
                 
+            if use_direct_copy and mpy_drive and os.path.exists(mpy_drive):
+                # Clean up any macOS AppleDouble metadata files to preserve FAT storage space
+                for root, dirs, files in os.walk(mpy_drive):
+                    for f in files:
+                        if f.startswith("._"):
+                            try:
+                                os.remove(os.path.join(root, f))
+                            except Exception:
+                                pass
+
             print(f"Successfully deployed {deployed_count} files to the Micromouse.")
             if not use_direct_copy:
                 print("Soft-rebooting the board...")

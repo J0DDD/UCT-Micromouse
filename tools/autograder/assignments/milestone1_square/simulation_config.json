@@ -1,0 +1,59 @@
+{
+  "robot": {
+    "mass": 0.238,
+    "axle_half_length": 0.054,
+    "wheel_radius": 0.0325,
+    "collision_radius": 0.070,
+    "ticks_per_rot": 1170.0,
+    "total_width": 0.122
+  },
+  "motor": {
+    "max_speed": 0.40,
+    "tau": 0.088,
+    "imbalance": 0.08,
+    "slip": 0.08,
+    "dead_band_l": 58.0,
+    "dead_band_r": 62.0,
+    "perturb_dead_band_std": 3.0,
+    "perturb_imbalance_std": 0.02,
+    "perturb_slip_std": 0.015
+  },
+  "tof_sensors": [
+    {
+      "name": "tof_l",
+      "offset_x": 0.050,
+      "offset_y": 0.040,
+      "yaw": 1.5708,
+      "max_range": 2.0,
+      "fov_deg": 25.0
+    },
+    {
+      "name": "tof_c",
+      "offset_x": 0.065,
+      "offset_y": 0.0,
+      "yaw": 0.0,
+      "max_range": 2.0,
+      "fov_deg": 25.0
+    },
+    {
+      "name": "tof_r",
+      "offset_x": 0.050,
+      "offset_y": -0.040,
+      "yaw": -1.5708,
+      "max_range": 2.0,
+      "fov_deg": 25.0
+    }
+  ],
+  "maze": {
+    "grid_rows": 4,
+    "grid_cols": 6,
+    "block_dim": 0.20,
+    "wall_thickness": 0.006
+  },
+  "imu": {
+    "gyro_bias_std": 0.15,
+    "gyro_noise_std": 0.50,
+    "accel_bias_std": 1.35,
+    "accel_noise_std": 0.20
+  }
+}

@@ -6,10 +6,17 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#define LOGGER_PARTITION_START  0x00000U
-#define LOGGER_PARTITION_MAX    0xDFFFFU  // 896 KB limit (FAT filesystem starts at 0xE0000U)
-#define LOG_PAGE_SIZE           256U
-#define LOG_SECTOR_SIZE         4096U
+// External Flash Partition Definitions (New boards: 1 MB external flash)
+#define EXT_LOGGER_PARTITION_START  0x00000U
+#define EXT_LOGGER_PARTITION_MAX    0xFFFFFUL   // 1024 KB limit
+#define EXT_LOG_SECTOR_SIZE         4096U
+
+// Internal Flash Partition Definitions (Legacy boards: 32 KB internal partition, Sectors 240-255)
+#define INT_LOGGER_PARTITION_START  0x08078000U
+#define INT_LOGGER_PARTITION_MAX    0x0807FFFFU // 32 KB limit
+#define INT_FLASH_PAGE_SIZE         2048U
+
+#define LOG_PAGE_SIZE               256U
 
 #include "serial_interface.h"
 extern ZD25WQ80C_t flash;
@@ -18,9 +25,12 @@ static void backup_write_log_addr(uint32_t addr);
 static void backup_invalidate_log(void);
 static uint32_t backup_read_log_addr(void);
 
-static uint8_t log_page_buf[LOG_PAGE_SIZE];
+static uint8_t log_page_buf[LOG_PAGE_SIZE] __attribute__((aligned(8)));
 static uint16_t log_page_idx = 0;
-static uint32_t log_write_addr = LOGGER_PARTITION_START;
+static uint32_t log_write_addr = 0;
+static uint32_t log_partition_start = 0;
+static uint32_t log_partition_max = 0;
+static bool has_ext_flash = false;
 static bool logging_active = false;
 static bool header_written = false;
 static uint32_t log_start_time = 0;
@@ -55,40 +65,61 @@ static uint32_t compute_code_hash(void) {
         hash *= 16777619U;
     }
     
-    // 2. Hash first block of FAT filesystem region to capture directory differences
-    uint8_t sector_buf[512];
-    // Read direct from physical offset 0xE0000U
-    if (initZD25WQ80C()) {
-        if (ZD25WQ80C_Read(0xE0000U, sector_buf, 512) == HAL_OK) {
-            for (int i = 0; i < 512; i++) {
-                hash ^= sector_buf[i];
-                hash *= 16777619U;
-            }
-        }
+    // 2. Hash first block of internal FAT filesystem (0x08060000)
+    const uint8_t *fs_ptr = (const uint8_t*)0x08060000;
+    for (int i = 0; i < 512; i++) {
+        hash ^= fs_ptr[i];
+        hash *= 16777619U;
     }
     
     return hash;
 }
 
-
-
-// Ensures current sector is erased before writing
+// Ensures current sector/page is erased before writing
 static void ensure_sector_erased(uint32_t addr) {
-    if (addr % LOG_SECTOR_SIZE == 0) {
-        ZD25WQ80C_SectorErase(addr);
+    if (has_ext_flash) {
+        if (addr % EXT_LOG_SECTOR_SIZE == 0) {
+            ZD25WQ80C_SectorErase(addr);
+        }
+    } else {
+        if (addr % INT_FLASH_PAGE_SIZE == 0) {
+            FLASH_EraseInitTypeDef EraseInitStruct;
+            uint32_t PageError;
+            EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+            EraseInitStruct.Banks = FLASH_BANK_2;
+            EraseInitStruct.Page = (addr - 0x08040000U) / INT_FLASH_PAGE_SIZE;
+            EraseInitStruct.NbPages = 1;
+            
+            HAL_FLASH_Unlock();
+            __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
+            HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+            HAL_FLASH_Lock();
+        }
     }
 }
 
-// Flush page buffer to external flash
+// Flush page buffer to flash (external SPI or internal flash)
 static void flush_log_page(void) {
     if (log_page_idx > 0) {
-        if (log_write_addr + LOG_PAGE_SIZE <= LOGGER_PARTITION_MAX) {
+        if (log_write_addr + LOG_PAGE_SIZE <= log_partition_max) {
             ensure_sector_erased(log_write_addr);
             // Pad with space characters to fill the 256-byte page boundary
             while (log_page_idx < LOG_PAGE_SIZE) {
                 log_page_buf[log_page_idx++] = ' ';
             }
-            ZD25WQ80C_PageProgram(log_write_addr, log_page_buf, LOG_PAGE_SIZE);
+            
+            if (has_ext_flash) {
+                ZD25WQ80C_PageProgram(log_write_addr, log_page_buf, LOG_PAGE_SIZE);
+            } else {
+                HAL_FLASH_Unlock();
+                __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
+                for (uint32_t i = 0; i < LOG_PAGE_SIZE; i += 8) {
+                    uint64_t data64 = *(uint64_t*)(log_page_buf + i);
+                    HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, log_write_addr + i, data64);
+                }
+                HAL_FLASH_Lock();
+            }
+            
             log_write_addr += LOG_PAGE_SIZE;
             // Persist pointer to Backup Domain register
             backup_write_log_addr(log_write_addr);
@@ -131,22 +162,41 @@ static void backup_invalidate_log(void) {
 }
 
 static uint32_t backup_read_log_addr(void) {
-    // Enable PWR clock and disable backup domain write protection
     RCC->APB1ENR1 |= RCC_APB1ENR1_PWREN;
     PWR->CR1 |= PWR_CR1_DBP;
     if (RTC->BKP5R == 0x12345678U) {
-        return RTC->BKP4R;
+        uint32_t addr = RTC->BKP4R;
+        if (addr >= log_partition_start && addr <= log_partition_max) {
+            return addr;
+        }
     }
     
-    // Backup register was wiped. Recover address dynamically by scanning flash page-by-page.
-    uint32_t scan_addr = LOGGER_PARTITION_START;
+    // Backup register was wiped. Recover address dynamically by scanning page-by-page.
+    uint32_t scan_addr = log_partition_start;
     uint8_t first_byte = 0;
-    while (scan_addr < LOGGER_PARTITION_MAX) {
-        if (ZD25WQ80C_Read(scan_addr, &first_byte, 1) != HAL_OK) {
-            break;
+    
+    // Check if the partition starts with valid JSON '{'
+    if (has_ext_flash) {
+        if (ZD25WQ80C_Read(scan_addr, &first_byte, 1) != HAL_OK || first_byte != '{') {
+            return log_partition_start;
         }
-        if (first_byte == 0xFF) {
-            break;
+    } else {
+        first_byte = *(const uint8_t*)scan_addr;
+        if (first_byte != '{') {
+            return log_partition_start;
+        }
+    }
+    
+    while (scan_addr < log_partition_max) {
+        if (has_ext_flash) {
+            if (ZD25WQ80C_Read(scan_addr, &first_byte, 1) != HAL_OK || first_byte == 0xFF) {
+                break;
+            }
+        } else {
+            first_byte = *(const uint8_t*)scan_addr;
+            if (first_byte == 0xFF) {
+                break;
+            }
         }
         scan_addr += LOG_PAGE_SIZE;
     }
@@ -154,14 +204,20 @@ static uint32_t backup_read_log_addr(void) {
 }
 
 void kernel_logger_init(void) {
-    if (!flash.initialized) {
-        initZD25WQ80C();
+    // Probe external SPI flash
+    has_ext_flash = initZD25WQ80C();
+    if (has_ext_flash) {
+        log_partition_start = EXT_LOGGER_PARTITION_START;
+        log_partition_max = EXT_LOGGER_PARTITION_MAX;
+    } else {
+        log_partition_start = INT_LOGGER_PARTITION_START;
+        log_partition_max = INT_LOGGER_PARTITION_MAX;
     }
     
     // Read recovered pointer from STM32 Backup Domain registers
     log_write_addr = backup_read_log_addr();
     log_page_idx = 0;
-    header_written = (log_write_addr > LOGGER_PARTITION_START);
+    header_written = (log_write_addr > log_partition_start);
     logging_active = false;
 }
 
@@ -172,7 +228,10 @@ void kernel_logger_tick(void) {
         if (s->left_pwm != 0 || s->right_pwm != 0) {
             logging_active = true;
             // Force reset log partition pointers to start fresh on a new run
-            log_write_addr = LOGGER_PARTITION_START;
+            if (log_partition_start == 0 && log_partition_max == 0) {
+                kernel_logger_init();
+            }
+            log_write_addr = log_partition_start;
             log_page_idx = 0;
             header_written = false;
             backup_write_log_addr(log_write_addr);
@@ -182,7 +241,7 @@ void kernel_logger_tick(void) {
     }
 
     // Check flash space limit
-    if (log_write_addr >= LOGGER_PARTITION_MAX) {
+    if (log_write_addr >= log_partition_max) {
         return;
     }
 
@@ -190,14 +249,20 @@ void kernel_logger_tick(void) {
     if (!header_written) {
         uint32_t *uid = (uint32_t*)STM32L4_UID_ADDR;
         uint32_t code_hash = compute_code_hash();
-        char header_buf[128];
+        char header_buf[160];
+        const char *board_str = has_ext_flash ? "2026" : "2025";
+        extern int getIMUType(void);
+        int imu_t = getIMUType();
+        const char *imu_str = (imu_t == 2) ? "LSM6DS3" : 
+                              (imu_t == 1) ? "ICM42605" : "UNKNOWN";
         snprintf(header_buf, sizeof(header_buf), 
-                 "{\"log_header\":1,\"uid\":\"%08X%08X%08X\",\"hash\":%lu}\n", 
+                 "{\"log_header\":1,\"board\":\"%s\",\"imu\":\"%s\",\"uid\":\"%08X%08X%08X\",\"hash\":%lu,\"ext\":%d}\n", 
+                 board_str, imu_str,
                  (unsigned int)uid[0], (unsigned int)uid[1], (unsigned int)uid[2], 
-                 (unsigned long)code_hash);
+                 (unsigned long)code_hash, has_ext_flash ? 1 : 0);
         append_to_log(header_buf);
         header_written = true;
-        log_start_time = HAL_GetTick(); // Record the start time of the logged run
+        log_start_time = HAL_GetTick();
         last_log_time = log_start_time;
 
         // Initialize shadow states
@@ -211,108 +276,99 @@ void kernel_logger_tick(void) {
         last_ax = IMU_Accel[0]; last_ay = IMU_Accel[1]; last_az = IMU_Accel[2];
     }
 
-    // 3. Perform sparse compression check. Build JSON listing relative timestamp delta and changed values.
+    // 3. Perform sparse compression check
     uint32_t current_time = HAL_GetTick();
     uint32_t dt = current_time - last_log_time;
     last_log_time = current_time;
 
     char record_buf[256];
     int written = snprintf(record_buf, sizeof(record_buf), "{\"+t\":%lu", (unsigned long)dt);
-    bool first = false; // "+t" has been written, so subsequent items always need a leading comma
 
     // Check and log variables
     if (s->left_pwm != last_left_pwm) {
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"l\":%d", s->left_pwm);
-        last_left_pwm = s->left_pwm; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"l\":%d", s->left_pwm);
+        last_left_pwm = s->left_pwm;
     }
     if (s->right_pwm != last_right_pwm) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"r\":%d", s->right_pwm);
-        last_right_pwm = s->right_pwm; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"r\":%d", s->right_pwm);
+        last_right_pwm = s->right_pwm;
     }
     if (s->tof_l != last_tof_l) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"tl\":%u", s->tof_l);
-        last_tof_l = s->tof_l; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"tl\":%u", s->tof_l);
+        last_tof_l = s->tof_l;
     }
     if (s->tof_al != last_tof_al) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"tal\":%u", s->tof_al);
-        last_tof_al = s->tof_al; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"tal\":%u", s->tof_al);
+        last_tof_al = s->tof_al;
     }
     if (s->tof_c != last_tof_c) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"tc\":%u", s->tof_c);
-        last_tof_c = s->tof_c; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"tc\":%u", s->tof_c);
+        last_tof_c = s->tof_c;
     }
     if (s->tof_ar != last_tof_ar) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"tar\":%u", s->tof_ar);
-        last_tof_ar = s->tof_ar; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"tar\":%u", s->tof_ar);
+        last_tof_ar = s->tof_ar;
     }
     if (s->tof_r != last_tof_r) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"tr\":%u", s->tof_r);
-        last_tof_r = s->tof_r; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"tr\":%u", s->tof_r);
+        last_tof_r = s->tof_r;
     }
     if (s->lenc != last_lenc) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"le\":%ld", (long)s->lenc);
-        last_lenc = s->lenc; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"le\":%ld", (long)s->lenc);
+        last_lenc = s->lenc;
     }
     if (s->renc != last_renc) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"re\":%ld", (long)s->renc);
-        last_renc = s->renc; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"re\":%ld", (long)s->renc);
+        last_renc = s->renc;
     }
-    if (abs((int)(s->gyro * 100.0f) - (int)(last_gyro * 100.0f)) > 1) { // threshold filter
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"g\":%.2f", (double)s->gyro);
-        last_gyro = s->gyro; first = false;
+    if (abs((int)(s->gyro * 100.0f) - (int)(last_gyro * 100.0f)) > 1) {
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"g\":%.2f", (double)s->gyro);
+        last_gyro = s->gyro;
     }
     if (abs((int)(s->v_batt * 100.0f) - (int)(last_v_batt * 100.0f)) > 1) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"v\":%.2f", (double)s->v_batt);
-        last_v_batt = s->v_batt; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"v\":%.2f", (double)s->v_batt);
+        last_v_batt = s->v_batt;
     }
 
     extern float IMU_Accel[3];
-    if (abs((int)(IMU_Accel[0] * 10.0f) - (int)(last_ax * 10.0f)) > 1) { // 0.1 m/s2 threshold filter
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"ax\":%.2f", (double)IMU_Accel[0]);
-        last_ax = IMU_Accel[0]; first = false;
+    if (abs((int)(IMU_Accel[0] * 10.0f) - (int)(last_ax * 10.0f)) > 1) {
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"ax\":%.2f", (double)IMU_Accel[0]);
+        last_ax = IMU_Accel[0];
     }
     if (abs((int)(IMU_Accel[1] * 10.0f) - (int)(last_ay * 10.0f)) > 1) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"ay\":%.2f", (double)IMU_Accel[1]);
-        last_ay = IMU_Accel[1]; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"ay\":%.2f", (double)IMU_Accel[1]);
+        last_ay = IMU_Accel[1];
     }
     if (abs((int)(IMU_Accel[2] * 10.0f) - (int)(last_az * 10.0f)) > 1) {
-        if (!first) { written += snprintf(record_buf + written, sizeof(record_buf) - written, ","); }
-        written += snprintf(record_buf + written, sizeof(record_buf) - written, "\"az\":%.2f", (double)IMU_Accel[2]);
-        last_az = IMU_Accel[2]; first = false;
+        written += snprintf(record_buf + written, sizeof(record_buf) - written, ",\"az\":%.2f", (double)IMU_Accel[2]);
+        last_az = IMU_Accel[2];
     }
 
-    // Always append the record which now contains at least the relative timestamp
     written += snprintf(record_buf + written, sizeof(record_buf) - written, "}\n");
     append_to_log(record_buf);
 }
 
 void kernel_logger_dump_custom(void (*print_fn)(const uint8_t *buf, uint32_t len)) {
-    // Stop motors for safety during dump
     kernel_set_pwm(0, 0);
     
     const char *start_msg = "\r\n--- START LOG DUMP ---\r\n";
     print_fn((const uint8_t *)start_msg, (uint32_t)strlen(start_msg));
     
-    // Flush any pending buffered log page before reading
     flush_log_page();
     
     static uint8_t dump_buf[LOG_PAGE_SIZE];
-    uint32_t current_addr = LOGGER_PARTITION_START;
+    uint32_t current_addr = log_partition_start;
     
-    while (current_addr < log_write_addr) {
-        if (ZD25WQ80C_Read(current_addr, dump_buf, LOG_PAGE_SIZE) == HAL_OK) {
+    while (current_addr < log_write_addr && (current_addr + LOG_PAGE_SIZE) <= log_partition_max) {
+        if (has_ext_flash) {
+            if (ZD25WQ80C_Read(current_addr, dump_buf, LOG_PAGE_SIZE) == HAL_OK) {
+                if (dump_buf[0] == 0xFF) {
+                    break;
+                }
+                print_fn(dump_buf, LOG_PAGE_SIZE);
+            }
+        } else {
+            memcpy(dump_buf, (const void*)current_addr, LOG_PAGE_SIZE);
             if (dump_buf[0] == 0xFF) {
                 break;
             }

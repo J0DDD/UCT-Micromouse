@@ -61,17 +61,30 @@ The submission consists of:
 2. **Your Physical Run Video (`run_video.mp4`):**
    * Uploaded as a **separate file** alongside your ZIP.
 
-#### **Testing the Autograder Offline (Locally)**
-You are highly encouraged to test your algorithm against the grading suite locally on your laptop before uploading to Gradescope. To run the full multi-test evaluation suite locally, run this command from the repository root:
-```bash
-python tools/autograder/grade_runner.py
-```
-This script runs the local simulator backend, automatically detects and executes your code from **`workspace/task1_square/`**, runs it through all 3 test scenarios (including the hidden runs), and outputs the resulting score sheet directly to your terminal.
+#### **Testing the Autograder & Robustness Stress Tests Offline (Locally)**
+You are highly encouraged to test your algorithm against the grading suite and physical perturbation stress tests locally on your laptop before uploading to Gradescope.
 
-*Note: If you want to run the autograder on a different folder (e.g. a solutions or test directory), you can override the source folder using the `--submission` flag:*
-```bash
-python tools/autograder/grade_runner.py --submission path/to/your/folder
-```
+1. **Multi-Track Robustness Suite (Recommended):**
+   Evaluate your controller across 6 physical tracks with motor gain imbalances ($\pm 12\%$) and surface slip ($10\%$):
+   ```bash
+   python tools/test_robustness.py workspace/task1_square/main.py
+   ```
+   To test with completely randomized perturbation ranges:
+   ```bash
+   python tools/test_robustness.py workspace/task1_square/main.py --randomize
+   ```
+
+2. **Official Autograder Replicator:**
+   To run the full multi-test evaluation suite locally, run this command from the repository root:
+   ```bash
+   python tools/autograder/grade_runner.py
+   ```
+   This script runs the local simulator backend, automatically detects and executes your code from **`workspace/task1_square/`**, runs it through all 3 test scenarios (including the hidden runs), and outputs the resulting score sheet directly to your terminal.
+   
+   *Note: If you want to run the autograder on a different folder, you can override the source folder using the `--submission` flag:*
+   ```bash
+   python tools/autograder/grade_runner.py --submission path/to/your/folder
+   ```
 
 ---
 

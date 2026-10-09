@@ -41,6 +41,9 @@ solutions/
 # External submodules/libraries
 external/Micromouse/
 external/src/
+external/firmware/
+.ccmux/
+main_usedtowork.py
 
 # Local diagnostic log files
 *.log
@@ -54,3 +57,9 @@ external/src/
 
 # Gradescope exports
 assignment_8326280_export/
+
+# Autograder local run artifacts
+tools/autograder/results.json
+tools/autograder/trajectory.json
+tools/autograder/run.mp4
+tools/autograder/trajectory.svg
