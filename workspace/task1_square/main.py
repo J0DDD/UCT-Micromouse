@@ -119,6 +119,8 @@ def update_heading(current_angle_deg, gyro_dps, dt_s):
     # Convert gyro reading to angle by integrating
     current_angle_deg += gyro_dps * dt_s
 
+    print(f"Current Angle: {current_angle_deg:.3f}, Gyro: {gyro_dps:.3f}")
+    
     return current_angle_deg
 
 def update_turn_angle(current_angle_deg, lenc, renc, prev_lenc, prev_renc, gyro_dps, dt_s, gyro_trust):
