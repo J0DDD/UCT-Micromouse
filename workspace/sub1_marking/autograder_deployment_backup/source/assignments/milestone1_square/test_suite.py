@@ -104,8 +104,15 @@ def evaluate_run(trajectory_file, is_hidden=False):
                 cur_pts = [trajectory[k]]
         clusters.append((cur_c, cur_pts))
         
-    # Extract significant turn segments (filtering short transients < 3 steps)
-    turn_clusters = [pts for c_type, pts in clusters if c_type == 2 and len(pts) >= 3]
+    # Extract significant turn segments (must be active turning with >= 35 deg net angular change)
+    turn_clusters = []
+    for c_type, pts in clusters:
+        if c_type == 2:
+            idx0 = trajectory.index(pts[0])
+            idx1 = trajectory.index(pts[-1])
+            d_th = abs(unwrapped[idx1] - unwrapped[idx0])
+            if d_th >= math.radians(35.0):
+                turn_clusters.append(pts)
 
     # Segment translating legs between turns:
     # Legs are the physical path intervals between turns, preventing startup hesitations from splitting legs.

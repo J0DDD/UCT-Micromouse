@@ -183,7 +183,9 @@ class MazeSolver:
         print("[Mission Complete] High-speed sprint finished inside target room!")
 
 def main():
-    solver = MazeSolver()
+    # Dynamically query active arena dimensions (4x6 in standard lab, 8x8 in championship/autograder)
+    rows, cols = uct_mouse.get_maze_dimensions()
+    solver = MazeSolver(rows=rows, cols=cols)
     solver.solve()
 
 if __name__ == "__main__":

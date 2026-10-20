@@ -1,94 +1,84 @@
+# =========================================================================
+# UCT Micromouse - Milestone 1: Run a Square (1m x 1m) (Framework)
+# =========================================================================
+# ASSIGNMENT DESCRIPTION:
+# Implement a control loop to drive the mouse in a 1 meter by 1 meter square,
+# turning 90 degrees at each corner, and returning to the start position.
+# 
+# KEY CONTROLS:
+# - uct_mouse.set_motors(left_pwm, right_pwm) -> Set speed (-100 to 100)
+# - uct_mouse.get_encoders() -> Returns (left_ticks, right_ticks)
+# - uct_mouse.get_tof()      -> Returns (left_mm, center_mm, right_mm)
+# - uct_mouse.delay_ms(ms)   -> Suspends execution and updates sensors
+#
+# GRADING:
+# - The autograder applies 8% motor imbalance and 8% wheel slip.
+# - Open-loop timing alone will accumulate errors. Use encoder and gyro
+#   feedback to compensate.
+# =========================================================================
+
 import uct_mouse
+import math
 
-print("Initializing Micromouse API...")
-uct_mouse.init()
+# Physical wheel calibration: 34mm diameter wheel (R = 0.017m), 470 ticks/rot -> ~4400 ticks/m
+TICKS_PER_M = 4400
+TICK_DIST_M = 1.0 / TICKS_PER_M
 
-# Ensure motors and LEDs are stopped initially
-uct_mouse.set_motors(0, 0)
-uct_mouse.set_led(0, 0)
-uct_mouse.set_led(1, 0)
-uct_mouse.set_led(2, 0)
+def drive_straight(distance_m):
+    """
+    TODO: Implement closed-loop straight line control.
+    Use encoder counts to measure distance, and gyroscope Z-axis angular rate
+    (gyro) to correct heading drift.
+    """
+    print(f"Driving straight for {distance_m}m...")
+    # Student code here
+    # Example (open-loop, prone to errors):
+    # uct_mouse.set_motors(50, 50)
+    # uct_mouse.delay_ms(1500)
+    # uct_mouse.set_motors(0, 0)
+    pass
 
-print("Running Milestone 0 LED range test. Press SW1 (User Button) to start wall-following.")
+def turn_left_90():
+    """
+    TODO: Implement closed-loop turning control.
+    Use the gyroscope Z-axis angular rate (gyro) to integrate heading angle
+    and turn exactly 90 degrees counter-clockwise.
+    """
+    print("Turning 90 degrees left...")
+    # Student code here
+    # Example (open-loop, prone to errors):
+    # uct_mouse.set_motors(-35, 35)
+    # uct_mouse.delay_ms(600)
+    # uct_mouse.set_motors(0, 0)
+    pass
 
-is_wall_following = 0
-side = 0
-target_dist = 0
+def run_square():
+    if not uct_mouse.init():
+        print("Initialization failed.")
+        return
 
-while True:
-    # Read TOF sensors
-    tof = uct_mouse.get_tof()
-    tof_l = tof[0]
-    tof_c = tof[2]
-    tof_r = tof[4]
-    
-    # Always run LED Range Test
-    val0 = 0
-    if tof_l < 200:
-        val0 = 1
-    uct_mouse.set_led(0, val0)
+    # Set motor and encoder polarities directly (avoid file I/O on bare-metal MCU)
+    uct_mouse.set_polarity(1, 1)
+    uct_mouse.set_encoder_polarity(1, 1)
 
-    val1 = 0
-    if tof_c < 200:
-        val1 = 1
-    uct_mouse.set_led(1, val1)
+    print("--- Milestone 1: Run a Square ---")
 
-    val2 = 0
-    if tof_r < 200:
-        val2 = 1
-    uct_mouse.set_led(2, val2)
-    
-    # Check if button is pressed (SW1 returns 1 when pressed)
-    if is_wall_following == 0:
-        btn_pressed = uct_mouse.get_button()
-        if btn_pressed == 1:
-            print("SW1 Pressed! Initiating wall-following...")
-            # Decide side to follow based on closer wall
-            if tof_l < tof_r:
-                side = 1
-                target_dist = tof_l
-                print("Following LEFT wall")
-            else:
-                side = 2
-                target_dist = tof_r
-                print("Following RIGHT wall")
-            is_wall_following = 1
-            # Debounce delay
-            uct_mouse.delay_ms(200)
+    for side in range(4):
+        # 1. Drive forward 1 meter
+        drive_straight(1.0)
+        
+        # 2. Settle briefly
+        uct_mouse.set_motors(0, 0)
+        uct_mouse.delay_ms(200)
+        
+        # 3. Turn 90 degrees left
+        turn_left_90()
+        
+        # 4. Settle briefly
+        uct_mouse.set_motors(0, 0)
+        uct_mouse.delay_ms(200)
 
-    if is_wall_following == 1:
-        # Check for collision front wall
-        if tof_c < 150:
-            print("Front obstacle detected! Stopping wall-following.")
-            uct_mouse.set_motors(0, 0)
-            is_wall_following = 0
-            # Debounce delay to prevent immediate re-trigger
-            uct_mouse.delay_ms(500)
-            
-        # Drive straight, correcting distance to side wall
-        if is_wall_following == 1:
-            if side == 1:
-                error = target_dist - tof_l
-                corr = error * 0.4
-                l_pwm = int(85 + corr)
-                r_pwm = int(85 - corr)
-            else:
-                error = target_dist - tof_r
-                corr = error * 0.4
-                l_pwm = int(85 - corr)
-                r_pwm = int(85 + corr)
-                
-            # Clamp PWM values to safe limits
-            if l_pwm < 75:
-                l_pwm = 75
-            if l_pwm > 100:
-                l_pwm = 100
-            if r_pwm < 75:
-                r_pwm = 75
-            if r_pwm > 100:
-                r_pwm = 100
-            
-            uct_mouse.set_motors(l_pwm, r_pwm)
+    print("Milestone 1 Completed!")
 
-    # Call delay_ms to keep C kernel tick active and allow background VCP commands to process (50Hz loop)
-    uct_mouse.delay_ms(20)
+if __name__ == "__main__":
+    run_square()

@@ -446,3 +446,18 @@ def set_display_text(row, text):
 def clear_display():
     """Restores all custom OLED rows 1..4 back to default telemetry."""
     print("[OLED] All rows restored to default telemetry.")
+
+def get_maze_dimensions():
+    """Returns (rows, cols) of the active maze arena.
+    
+    Returns:
+        tuple: (rows, cols) cell counts, e.g. (4, 6) or (8, 8).
+    """
+    s = _mouse.get_sensors()
+    rows = s.get('rows', 4)
+    cols = s.get('cols', 6)
+    return int(rows), int(cols)
+
+def get_maze_size():
+    """Alias for get_maze_dimensions()."""
+    return get_maze_dimensions()

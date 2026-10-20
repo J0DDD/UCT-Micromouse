@@ -256,11 +256,6 @@ Use this index to resolve common tasks instantly without additional user prompti
      ```
   * 3. Stage, commit, and push `firmware/binaries/micropython.bin` to main.
 
-* **GA3 Report Automated Evaluation & Anti-Inflation Protocol (Submission 3 / Design Report 2 & Beyond)**:
-
-  * **Strict Prohibition of Half-Band (`+0.5`) Stacking**: Automated rubrics must NEVER combine `+0.5` adjustment items on top of base bands (`Acceptable 2.0` or `Marginal 1.0`). Every question must resolve to exactly one discrete score tier (`3.0`, `2.0`, `1.0`, or `0.0`).
-  * **Target Cohort Mean**: Anchor the grading engine to a standard academic mean of **~65% (`13.0 / 20.0`)**. Standard competent work without exceptional mathematical depth or multi-trial statistical telemetry must receive clean **`2.0 / 3.0`**, reserving `2.5` and `3.0` exclusively for distinction-level Tier A rigor.
-  * **Zero Prompt Instruction Bleed**: Extraction scripts must strip all prompt header text before calculating section character limits to prevent accidental truncation.
 
 * **Controller Robustness & Perturbation Test Suite (`tools/test_robustness.py`)**:
 
@@ -270,5 +265,20 @@ Use this index to resolve common tasks instantly without additional user prompti
     * **Task 2 (Submission 4 / Autonomous Maze Solver)**: `python tools/test_robustness.py workspace/task2_maze/main.py`
   * **Dynamic Socket Architecture**: Automatically isolates simulation subprocess ports using `UCT_MICROMOUSE_PORT` and `--port` to prevent bind collisions or race conditions during multi-run batch loops.
   * **Offline Execution Guard**: Executes in fast-simulation mode with `--headless` and `UCT_OFFLINE_MODE=1` to guarantee fast, deterministic evaluation.
+
+---
+
+## 9. Official GA3 Assessment & Master Ledger Gatekeeper Invariant
+* **Absolute Invariant on Master Ledger Mutations:**
+  * Under **NO circumstances** may any agent, subagent, or automated script directly edit, rewrite, or overwrite `workspace/sub3_marking/OFFICIAL_GRADES_MASTER.json`.
+  * All grade modifications, lock commits, and comment updates to the official master ledger MUST strictly go through the authenticated CLI gatekeeper:
+    ```bash
+    python workspace/sub3_marking/grade_guard.py mutate ...
+    # or for batch transactions:
+    python workspace/sub3_marking/grade_guard.py batch-mutate ...
+    ```
+  * Mutations require explicit Convenor authorization via PBKDF2-authenticated passphrase.
+  * Direct manual or automated edits bypass HMAC signing, invalidate cryptographic records, and trigger immediate `TAMPER ALERT` alarms on `grade_guard.py verify`.
+  * The AI's role is strictly confined to staging draft proposals (`DRAFT_GRADES_STAGING.json`, `BATCH_<N>_RESULTS.json`, or `PROPOSED_BATCH_MUTATION.json`) for the Convenor to review and execute.
 
 

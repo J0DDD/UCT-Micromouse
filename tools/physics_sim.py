@@ -75,14 +75,23 @@ def generate_random_maze(grid_rows=4, grid_cols=6, block_dim=0.20, seed=None, ta
     v_walls = set((c, r) for c in range(1, grid_cols) for r in range(grid_rows))
     h_walls = set((c, r) for c in range(grid_cols) for r in range(1, grid_rows))
     
-    # 2x2 Target room cells: default placed towards the opposite quadrant or center
-    # For a 4x6 grid, default (cx, cy) = (4, 2) makes cells {(3,1), (3,2), (4,1), (4,2)} or (cols//2, rows//2)
+    # 2x2 Target room cells: placed dynamically and deterministically by seed
     if target_pos:
         cx, cy = target_pos
     else:
-        # Place 2x2 room in upper-right / center area, ensuring 1 <= cx <= grid_cols - 1 and 1 <= cy <= grid_rows - 1
-        cx = max(1, min(grid_cols - 1, grid_cols - 2 if grid_cols >= 4 else grid_cols // 2))
-        cy = max(1, min(grid_rows - 1, grid_rows // 2))
+        # Candidate (cx, cy) locations for 2x2 room (must fit in grid and not overlap start cell (0,0))
+        candidates = []
+        for c in range(1, grid_cols):
+            for r in range(1, grid_rows):
+                # Ensure start cell (0,0) and initial corridor (1,0) are not engulfed
+                if (c - 1, r - 1) == (0, 0) or (c, r - 1) == (0, 0):
+                    continue
+                candidates.append((c, r))
+        if candidates:
+            cx, cy = random.choice(candidates)
+        else:
+            cx = max(1, min(grid_cols - 1, grid_cols - 2 if grid_cols >= 4 else grid_cols // 2))
+            cy = max(1, min(grid_rows - 1, grid_rows // 2))
         
     tcs = {(cx - 1, cy - 1), (cx - 1, cy), (cx, cy - 1), (cx, cy)}
     
@@ -171,7 +180,7 @@ def generate_random_maze(grid_rows=4, grid_cols=6, block_dim=0.20, seed=None, ta
     return segments, (cx, cy)
 
 class PhysicsSimulator:
-    def __init__(self, maze_type="empty", imbalance=0.0, slip=0.0, headless=False, seed=None, config=None):
+    def __init__(self, maze_type="empty", imbalance=0.0, slip=0.0, headless=False, seed=None, config=None, grid_rows=None, grid_cols=None):
         self.maze_type = maze_type
         self.headless = headless
         self.seed = seed
@@ -204,8 +213,8 @@ class PhysicsSimulator:
             (0.045, -0.02, -math.pi/2)  # Right ToF
         ]
         
-        self.grid_rows = 4
-        self.grid_cols = 6
+        self.grid_rows = grid_rows if grid_rows is not None else 4
+        self.grid_cols = grid_cols if grid_cols is not None else 6
         self.block_dim = 0.20
         self.wall_thickness = 0.006
         self.target_room = None
@@ -302,7 +311,7 @@ class PhysicsSimulator:
         self.last_enc_l = 0.0  # tracks last-sent value to compute per-frame delta
         self.last_enc_r = 0.0
         self.time = 0.0
-        self.trajectory = [(self.x, self.y, self.theta)]
+        self.trajectory = [(self.x, self.y, self.theta, round(self.time, 3))]
         self.last_actuation = [0, 0]
         
         # Transient slip simulation state variables
@@ -433,11 +442,13 @@ class PhysicsSimulator:
         self.x += v * math.cos(self.theta) * dt
         self.y += v * math.sin(self.theta) * dt
         
-        # Log path (log on linear displacement > 1cm or angular rotation > 2.5 deg)
+        # Log path (log on linear displacement > 1cm, angular rotation > 2.5 deg, or every 0.1s during pauses)
+        last_t = self.trajectory[-1][3] if (self.trajectory and len(self.trajectory[-1]) > 3) else 0.0
         if (not self.trajectory or 
             math.hypot(self.x - self.trajectory[-1][0], self.y - self.trajectory[-1][1]) > 0.01 or 
-            abs((self.theta - self.trajectory[-1][2] + math.pi) % (2.0 * math.pi) - math.pi) > 0.04):
-            self.trajectory.append((self.x, self.y, self.theta))
+            abs((self.theta - self.trajectory[-1][2] + math.pi) % (2.0 * math.pi) - math.pi) > 0.04 or
+            (self.time - last_t) >= 0.10):
+            self.trajectory.append((self.x, self.y, self.theta, round(self.time, 3)))
             
         # Integrate Encoders (measures physical rotations, before slip)
         self.enc_l += (self.v_l * dt) / (2.0 * math.pi * self.R) * self.ticks_per_rot
@@ -626,6 +637,8 @@ def main():
     parser.add_argument("--trajectory-log", type=str, default="", help="Path to save detailed simulation trajectory state JSONL log")
     parser.add_argument("--max-time", type=float, default=None, help="Maximum simulation time limit in seconds")
     parser.add_argument("--config", type=str, default="", help="Path to simulation JSON config file")
+    parser.add_argument("--rows", type=int, default=None, help="Maze grid rows (e.g. 4 or 8)")
+    parser.add_argument("--cols", type=int, default=None, help="Maze grid columns (e.g. 6 or 8)")
     args = parser.parse_args()
     
     # Load config file if specified, or try default location
@@ -645,7 +658,16 @@ def main():
     active_seed = args.seed if args.seed is not None else random.randint(1, 100000)
     print(f"[Simulator] Active Simulation Seed: {active_seed}")
             
-    sim = PhysicsSimulator(maze_type=args.map, imbalance=args.imbalance, slip=args.slip, headless=args.headless, seed=active_seed, config=config_data)
+    sim = PhysicsSimulator(
+        maze_type=args.map,
+        imbalance=args.imbalance,
+        slip=args.slip,
+        headless=args.headless,
+        seed=active_seed,
+        config=config_data,
+        grid_rows=args.rows,
+        grid_cols=args.cols
+    )
     
     # Initialize Pygame in dummy mode if headless
     if args.headless:
@@ -745,6 +767,8 @@ def main():
                 "grid_rows": sim.grid_rows,
                 "grid_cols": sim.grid_cols,
                 "target_room": sim.target_room,
+                "seed": sim.seed,
+                "walls": sim.walls,
                 "trajectory": current_traj
             }
             with open(args.json_log, "w") as f:
@@ -836,14 +860,14 @@ def main():
                 if not hasattr(sim, "stationary_time"):
                     sim.stationary_time = 0.0
                 sim.stationary_time += dt
-                if sim.stationary_time >= 3.0:
+                if sim.stationary_time >= 6.0:
                     start_x = sim.trajectory[0][0] if sim.trajectory else 0.0
                     start_y = sim.trajectory[0][1] if sim.trajectory else 0.0
                     max_disp = 0.0
                     for pt in sim.trajectory:
                         max_disp = max(max_disp, math.hypot(pt[0] - start_x, pt[1] - start_y))
                     if max_disp > 0.1:
-                        print(f"[Simulator] Auto-completing run: Mouse stopped for 3.0s after moving.")
+                        print(f"[Simulator] Auto-completing run: Mouse stopped for 6.0s after moving.")
                         running = False
             else:
                 sim.stationary_time = 0.0
@@ -942,7 +966,7 @@ def main():
             delta_enc_r = int(sim.enc_r) - int(sim.last_enc_r)
             sim.last_enc_l = sim.enc_l
             sim.last_enc_r = sim.enc_r
-            tx_str = f'{{"tof_l":{tofs[0]}, "tof_c":{tofs[1]}, "tof_r":{tofs[2]}, "+lenc":{delta_enc_l}, "+renc":{delta_enc_r}, "gyro":{gyro_val:.4f}, "v_batt":6.0}}\r\n'
+            tx_str = f'{{"tof_l":{tofs[0]}, "tof_c":{tofs[1]}, "tof_r":{tofs[2]}, "+lenc":{delta_enc_l}, "+renc":{delta_enc_r}, "gyro":{gyro_val:.4f}, "rows":{sim.grid_rows}, "cols":{sim.grid_cols}, "v_batt":6.0}}\r\n'
             
             # Logger triggers on first motor command
             if not logging_started:
@@ -1106,7 +1130,7 @@ def main():
             try:
                 # Ensure the final resting pose is appended to trajectory
                 if not sim.trajectory or math.hypot(sim.x - sim.trajectory[-1][0], sim.y - sim.trajectory[-1][1]) > 1e-4 or abs((sim.theta - sim.trajectory[-1][2] + math.pi) % (2.0 * math.pi) - math.pi) > 1e-3:
-                    sim.trajectory.append((sim.x, sim.y, sim.theta))
+                    sim.trajectory.append((sim.x, sim.y, sim.theta, round(sim.time, 3)))
                     
                 # Calculate metrics
                 start_x = sim.trajectory[0][0] if sim.trajectory else 0.0
@@ -1134,6 +1158,8 @@ def main():
                     "grid_rows": sim.grid_rows,
                     "grid_cols": sim.grid_cols,
                     "target_room": sim.target_room,
+                    "seed": sim.seed,
+                    "walls": sim.walls,
                     "trajectory": sim.trajectory
                 }
                 with open(args.json_log, "w") as f:

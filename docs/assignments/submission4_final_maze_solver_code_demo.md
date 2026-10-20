@@ -66,8 +66,12 @@ Design and implement the complete autonomous intelligence for your Micromouse. T
 
 > [!NOTE]
 > **Lab Assessment & Gradescope Autograder Dimensions:**
-> * **Standard Course Maze:** Both the physical lab maze and the Gradescope autograder simulation use a **4 rows $\times$ 6 columns** grid ($0.8\text{ m} \times 1.2\text{ m}$ with $0.20\text{ m}$ cells). The starting cell `(0,0)` always opens to the East (`(1,0)`).
-> * **Championship Scalability (Tournament Exhibition):** In the final week tournament exhibition, robots may optionally compete on an expanded maze (e.g. 8x8 or 10x10). Ensure your `MazeSolver` class dynamically parameterizes grid dimensions (`MAZE_ROWS`, `MAZE_COLS`) rather than hardcoding fixed constants!
+> * **Standard Course Maze:** Both the physical lab maze and baseline development tests use a **4 rows $\times$ 6 columns** grid ($0.8\text{ m} \times 1.2\text{ m}$ with $0.20\text{ m}$ cells). The starting cell `(0,0)` always opens to the East (`(1,0)`).
+> * **Championship Scalability (Tournament & Autograder):** In the championship tournament and autograder scalability evaluation, robots compete on expanded arenas (e.g. $8 \times 8$). Your `MazeSolver` class must dynamically query the active arena dimensions using:
+>   ```python
+>   rows, cols = uct_mouse.get_maze_dimensions()
+>   ```
+>   Do NOT hardcode fixed $4 \times 6$ array bounds!
 
 ---
 
@@ -151,17 +155,19 @@ To verify that your physical run is authentic, the video must strictly adhere to
 ### 8. Evaluation Criteria & Grading Rubric
 Your Gradescope submission is evaluated across three parts:
 
-* **Part A: Co-Simulation Speed & Accuracy (60% of Milestone Mark):**
-  Your solver is tested in procedurally generated 4x6 virtual mazes under realistic physical perturbations ($8\%$ motor asymmetry, $2\%$ wheel slip). The simulation runs up to a **120-second (2.0 minute) limit**.
+* **Part A: Co-Simulation Speed, Robustness & Scalability (60% of Milestone Mark):**
+  Your solver is tested across 5 procedural virtual mazes under realistic physical perturbations ($6\%$ motor asymmetry, $4\%$ wheel slip, asymmetric walls, and $8 \times 8$ championship arena scalability). The simulation runs up to a **120-second limit** ($4 \times 6$) or **240-second limit** ($8 \times 8$).
   
   The autograder score is calculated out of 100 points as follows:
   * **Target Room Discovery (30 points):** Awarded for navigating into the 2x2 target room during exploration.
-  * **Recognition Pirouette (20 points):** Awarded for executing the $360^\circ$ clockwise spin inside the target room.
+  * **Recognition Pirouette (20 points):** Awarded for executing the on-the-spot $360^\circ$ clockwise spin inside the target room.
   * **Autonomous Return-to-Start (20 points):** Awarded for navigating back and stopping inside starting cell `(0,0)`.
-  * **High-Speed Solving Sprint (20 points):** Awarded for sprinting from `(0,0)` directly back into the target room.
-  * **Total Time Speed Bonus (10 points):** Scales continuously based on total elapsed mission time ($\le 35\text{s} = 10\text{ pts}$, $35\text{s} < t \le 120\text{s} = 10 \rightarrow 0\text{ pts}$).
+  * **High-Speed Solving Sprint (20 points):** Awarded for sprinting from `(0,0)` directly back into the target room along the optimal path.
+  * **Sprint Velocity & Dynamic Speedup Bonus (10 points):** Evaluates genuine corridor merging and trajectory optimization:
+    * *Absolute Sprint Velocity (5 pts):* Full marks for average sprint speed $\bar{v}_{\text{sprint}} \ge 0.30\text{ m/s}$ ($0\text{ pts}$ at $\le 0.15\text{ m/s}$).
+    * *Sprint Speedup Factor (5 pts):* Full marks for achieving $\ge 1.35\times$ speedup during sprint compared to exploration speed ($0\text{ pts}$ for $\le 1.05\times$ unmerged crawling).
   * **Applied Penalties:**
-    * **Timeout Penalty ($-10$ points):** Subtracted if the mission exceeds the 120-second limit.
+    * **Timeout Penalty ($-10$ points):** Subtracted if the mission exceeds the time limit (120s for 4x6; 240s for 8x8).
     * *Collision Note:* Contacting a wall halts the simulation immediately, capping the score at the milestones achieved prior to the crash.
 
 * **Part B: Physical Run Verification (30% of Milestone Mark):**
@@ -175,4 +181,4 @@ Your Gradescope submission is evaluated across three parts:
 
 > [!NOTE]
 > **Post-Submission Stress Testing & Grading Adaptation Policy:**
-> While public baseline tests are provided during development to verify basic mission flow, final autograding is conducted against a suite of randomized hidden stress tests (evaluating motor imbalances, surface slip, IMU noise, and alternate maze topologies) to test true closed-loop disturbance rejection and prevent overtraining. The grading thresholds, coefficients, and parameters detailed above serve as baseline targets. Course staff reserve the right to adjust, recalibrate, or expand specific test suites post-submission to ensure final grades remain fair, rigorous, and highly representative of actual design and hardware performance.
+> While public baseline tests are provided during development to verify basic mission flow, final autograding is conducted against a suite of randomized hidden stress tests (evaluating motor imbalances, surface slip, IMU noise, asymmetric corridors, and alternate/championship maze topologies) to test true closed-loop disturbance rejection, velocity profiling, and scalable graph search. The grading thresholds, coefficients, and parameters detailed above serve as baseline targets. Course staff reserve the right to adjust, recalibrate, or expand specific test suites post-submission to ensure final grades remain fair, rigorous, and highly representative of actual design and hardware performance.

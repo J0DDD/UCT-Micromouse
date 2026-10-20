@@ -54,16 +54,231 @@ def write_results(score, feedback, test_name="Autograder Evaluation"):
         json.dump(results, f, indent=2)
     print(f"[Grader] Results written to {RESULTS_FILE} with score {scaled_score}/60.0")
 
-def generate_trajectory_svg(trajectory_file):
+def generate_trajectory_svg(trajectory_file, assignment_name=""):
     try:
         if not trajectory_file or not os.path.exists(trajectory_file):
             return ""
         with open(trajectory_file, "r") as f:
             data = json.load(f)
         traj = data.get("trajectory", [])
-        if not traj or len(traj) < 2:
+        if not traj:
             return ""
+        if len(traj) == 1:
+            traj = [traj[0], traj[0]]
         
+        # Check if this is a maze trajectory (Submission 4 / Milestone 2) vs a square (Milestone 1)
+        if assignment_name:
+            is_maze = ("milestone2" in assignment_name) or ("maze" in assignment_name)
+        else:
+            is_maze = bool(data.get("target_room"))
+        
+        if is_maze:
+            grid_rows = data.get("grid_rows", 4)
+            grid_cols = data.get("grid_cols", 6)
+            cell_dim = 0.20
+            maze_w_m = grid_cols * cell_dim
+            maze_h_m = grid_rows * cell_dim
+            
+            # Target room coordinates
+            target_cx, target_cy = data.get("target_room") or (4, 2)
+            t_room_min_x = (target_cx - 1) * cell_dim
+            t_room_max_x = (target_cx + 1) * cell_dim
+            t_room_min_y = (target_cy - 1) * cell_dim
+            t_room_max_y = (target_cy + 1) * cell_dim
+            
+            w, h = 520, 380
+            margin = 35
+            
+            span_x = maze_w_m + 0.10
+            span_y = maze_h_m + 0.10
+            scale_px = min((w - 2 * margin) / span_x, (h - 2 * margin) / span_y)
+            
+            def to_svg_m(x, y):
+                sx = margin + x * scale_px
+                sy = (h - margin) - y * scale_px
+                return sx, sy
+            
+            pts = [to_svg_m(pt[0], pt[1]) for pt in traj]
+            path_d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f} " + " ".join(f"L {x:.1f},{y:.1f}" for x, y in pts[1:])
+            anim_dur = max(10.0, min(45.0, len(traj) * 0.05))
+            
+            start_sx, start_sy = to_svg_m(traj[0][0], traj[0][1])
+            final_sx, final_sy = to_svg_m(traj[-1][0], traj[-1][1])
+            
+            # Start cell box
+            sc_x0, sc_y1 = to_svg_m(0, cell_dim)
+            sc_w = cell_dim * scale_px
+            sc_h = cell_dim * scale_px
+            
+            # Target room box
+            tr_x0, tr_y1 = to_svg_m(t_room_min_x, t_room_max_y)
+            tr_w = (t_room_max_x - t_room_min_x) * scale_px
+            tr_h = (t_room_max_y - t_room_min_y) * scale_px
+            
+            # Outer maze border
+            mb_x0, mb_y1 = to_svg_m(0, maze_h_m)
+            mb_w = maze_w_m * scale_px
+            mb_h = maze_h_m * scale_px
+            
+            # Resolve maze walls
+            walls = data.get("walls", [])
+            if not walls:
+                # Dynamically generate walls from seed if not embedded in log
+                seed = data.get("seed", 42)
+                try:
+                    import importlib.util
+                    for p in [os.path.join(SOURCE_DIR, "physics_sim.py"),
+                              os.path.join(os.path.dirname(__file__), "..", "physics_sim.py"),
+                              os.path.join(os.path.dirname(__file__), "physics_sim.py")]:
+                        if os.path.exists(p):
+                            spec = importlib.util.spec_from_file_location("physics_sim_mod", p)
+                            ps_mod = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(ps_mod)
+                            walls, _ = ps_mod.generate_random_maze(grid_rows, grid_cols, cell_dim, seed=seed)
+                            break
+                except Exception:
+                    pass
+
+            # Faint background grid lines (open corridor guides)
+            grid_svg = []
+            for r in range(grid_rows + 1):
+                p0 = to_svg_m(0, r * cell_dim)
+                p1 = to_svg_m(maze_w_m, r * cell_dim)
+                grid_svg.append(f'<line x1="{p0[0]:.1f}" y1="{p0[1]:.1f}" x2="{p1[0]:.1f}" y2="{p1[1]:.1f}" stroke="#232d3d" stroke-width="1" stroke-dasharray="2,2"/>')
+            for c in range(grid_cols + 1):
+                p0 = to_svg_m(c * cell_dim, 0)
+                p1 = to_svg_m(c * cell_dim, maze_h_m)
+                grid_svg.append(f'<line x1="{p0[0]:.1f}" y1="{p0[1]:.1f}" x2="{p1[0]:.1f}" y2="{p1[1]:.1f}" stroke="#232d3d" stroke-width="1" stroke-dasharray="2,2"/>')
+            grid_lines_str = "\n    ".join(grid_svg)
+
+            # Solid Micromouse Maze Walls (White/light-gray vertical and horizontal barrier planks)
+            walls_svg = []
+            if walls:
+                for seg in walls:
+                    (x1, y1), (x2, y2) = seg
+                    p1 = to_svg_m(x1, y1)
+                    p2 = to_svg_m(x2, y2)
+                    walls_svg.append(f'<line x1="{p1[0]:.1f}" y1="{p1[1]:.1f}" x2="{p2[0]:.1f}" y2="{p2[1]:.1f}" stroke="#e2e8f0" stroke-width="3.5" stroke-linecap="round"/>')
+            walls_str = "\n    ".join(walls_svg)
+
+            # Corner Lattice Posts (Standard Micromouse wooden/plastic peg junctions)
+            posts_svg = []
+            for r in range(grid_rows + 1):
+                for c in range(grid_cols + 1):
+                    p = to_svg_m(c * cell_dim, r * cell_dim)
+                    posts_svg.append(f'<circle cx="{p[0]:.1f}" cy="{p[1]:.1f}" r="2.2" fill="#cbd5e1" stroke="#475569" stroke-width="0.5"/>')
+            posts_str = "\n    ".join(posts_svg)
+            
+            # Subsample trajectory for smooth, lightweight keyframed animation
+            step_size = max(1, len(traj) // 250)
+            sub_traj = traj[::step_size]
+            if sub_traj[-1] != traj[-1]:
+                sub_traj.append(traj[-1])
+            
+            # Continuous unwrapped yaw tracking to ensure smooth 360-degree pirouette rotation
+            unwrapped_thetas = []
+            cum_th = sub_traj[0][2]
+            unwrapped_thetas.append(cum_th)
+            for i in range(len(sub_traj) - 1):
+                d_th = sub_traj[i+1][2] - sub_traj[i][2]
+                while d_th > math.pi: d_th -= 2 * math.pi
+                while d_th < -math.pi: d_th += 2 * math.pi
+                cum_th += d_th
+                unwrapped_thetas.append(cum_th)
+            
+            # Time-accurate physical keyTimes calculation
+            has_timestamps = len(sub_traj[0]) > 3 and len(sub_traj[-1]) > 3
+            if has_timestamps:
+                t0 = sub_traj[0][3]
+                t_end = sub_traj[-1][3]
+                total_duration = max(0.5, t_end - t0)
+                times = [max(0.0, min(1.0, (pt[3] - t0) / total_duration)) for pt in sub_traj]
+                times[0] = 0.0
+                times[-1] = 1.0
+                for ti in range(1, len(times)):
+                    if times[ti] < times[ti - 1]:
+                        times[ti] = times[ti - 1]
+                key_times_attr = f'keyTimes="{"; ".join(f"{t:.4f}" for t in times)}"'
+                anim_dur = max(6.0, min(45.0, total_duration))
+            else:
+                key_times_attr = ""
+                anim_dur = max(10.0, min(45.0, len(traj) * 0.05))
+
+            trans_vals = "; ".join(f"{to_svg_m(pt[0], pt[1])[0]:.1f} {to_svg_m(pt[0], pt[1])[1]:.1f}" for pt in sub_traj)
+            rot_vals = "; ".join(f"{-math.degrees(th):.1f}" for th in unwrapped_thetas)
+            
+            # Physical mouse dimensions scaled to SVG coordinates
+            lf = 0.055 * scale_px
+            lr = 0.048 * scale_px
+            wc = 0.034 * scale_px
+            ww = 0.048 * scale_px
+            wrad = 0.0325 * scale_px
+            wth = 0.009 * scale_px
+            pcb_d = f"M {-lr:.1f},{-wc:.1f} L {lf-0.015*scale_px:.1f},{-wc:.1f} L {lf:.1f},{-wc*0.4:.1f} L {lf:.1f},{wc*0.4:.1f} L {lf-0.015*scale_px:.1f},{wc:.1f} L {-lr:.1f},{wc:.1f} Z"
+            
+            svg = f'''<div style="margin: 15px 0;">
+  <h4 style="margin-bottom: 8px; color: #fff;">📊 Recorded Trajectory & Maze Solver Playback:</h4>
+  <svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="background:#141414; border:1px solid #444; border-radius:6px; max-width: 100%; height: auto;">
+    <rect width="100%" height="100%" fill="#141414"/>
+    
+    <!-- Maze Floor & Open Grid -->
+    <rect x="{mb_x0:.1f}" y="{mb_y1:.1f}" width="{mb_w:.1f}" height="{mb_h:.1f}" fill="#111827"/>
+    {grid_lines_str}
+    
+    <!-- Start Cell (0,0) Highlight -->
+    <rect x="{sc_x0:.1f}" y="{sc_y1:.1f}" width="{sc_w:.1f}" height="{sc_h:.1f}" fill="#00b4d8" fill-opacity="0.20" stroke="#00b4d8" stroke-width="1.2"/>
+    <text x="{sc_x0+4:.1f}" y="{sc_y1+13:.1f}" fill="#00b4d8" font-size="8.5" font-family="sans-serif" font-weight="bold">Start (0,0)</text>
+    
+    <!-- 2x2 Target Room Zone Highlight -->
+    <rect x="{tr_x0:.1f}" y="{tr_y1:.1f}" width="{tr_w:.1f}" height="{tr_h:.1f}" fill="#2ec4b6" fill-opacity="0.22" stroke="#2ec4b6" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="{tr_x0+6:.1f}" y="{tr_y1+15:.1f}" fill="#2ec4b6" font-size="9.5" font-family="sans-serif" font-weight="bold">🎯 2x2 Target Room</text>
+    
+    <!-- Actual Mouse Trajectory -->
+    <path d="{path_d}" fill="none" stroke="#ffd166" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+    
+    <!-- Start & Final Position Markers -->
+    <circle cx="{start_sx:.1f}" cy="{start_sy:.1f}" r="4.5" fill="#2ec4b6" stroke="#fff" stroke-width="1.2"/>
+    <circle cx="{final_sx:.1f}" cy="{final_sy:.1f}" r="4.5" fill="#e71d36" stroke="#fff" stroke-width="1.2"/>
+    
+    <!-- Solid Maze Walls & Corner Posts -->
+    {walls_str}
+    {posts_str}
+    
+    <!-- True 1:1 Scale UCT Micromouse Animated Vehicle -->
+    <g id="uct_mouse_robot">
+      <animateTransform attributeName="transform" type="translate" values="{trans_vals}" {key_times_attr} dur="{anim_dur:.1f}s" repeatCount="indefinite" />
+      <animateTransform attributeName="transform" type="rotate" additive="sum" values="{rot_vals}" {key_times_attr} dur="{anim_dur:.1f}s" repeatCount="indefinite" />
+      <!-- Left & Right Wheels -->
+      <rect x="{-wrad:.1f}" y="{-ww:.1f}" width="{2*wrad:.1f}" height="{wth:.1f}" rx="1.5" fill="#343a40" stroke="#111111" stroke-width="0.8"/>
+      <rect x="{-wrad:.1f}" y="{ww-wth:.1f}" width="{2*wrad:.1f}" height="{wth:.1f}" rx="1.5" fill="#343a40" stroke="#111111" stroke-width="0.8"/>
+      <line x1="0" y1="{-ww:.1f}" x2="0" y2="{ww:.1f}" stroke="#6c757d" stroke-width="1.0"/>
+      <!-- DC Motor Gearboxes -->
+      <rect x="{-0.022*scale_px:.1f}" y="{-wc*0.95:.1f}" width="{0.030*scale_px:.1f}" height="{0.015*scale_px:.1f}" fill="#d4a373" stroke="#b08968" stroke-width="0.5"/>
+      <rect x="{-0.022*scale_px:.1f}" y="{wc*0.95-0.015*scale_px:.1f}" width="{0.030*scale_px:.1f}" height="{0.015*scale_px:.1f}" fill="#d4a373" stroke="#b08968" stroke-width="0.5"/>
+      <!-- Green PCB Mainboard with Chamfered Nose -->
+      <path d="{pcb_d}" fill="#134e2c" stroke="#d4af37" stroke-width="1.0"/>
+      <!-- STM32 MCU Chip (Diamond rotated 45 deg) -->
+      <rect x="{-0.010*scale_px:.1f}" y="{-0.010*scale_px:.1f}" width="{0.020*scale_px:.1f}" height="{0.020*scale_px:.1f}" transform="rotate(45)" fill="#111111" stroke="#ffd166" stroke-width="0.6"/>
+      <!-- OLED Display Breakout with Cyan Screen -->
+      <rect x="{0.008*scale_px:.1f}" y="{-0.013*scale_px:.1f}" width="{0.024*scale_px:.1f}" height="{0.026*scale_px:.1f}" rx="1.0" fill="#0077b6" stroke="#03045e" stroke-width="0.5"/>
+      <rect x="{0.012*scale_px:.1f}" y="{-0.009*scale_px:.1f}" width="{0.016*scale_px:.1f}" height="{0.018*scale_px:.1f}" fill="#000814" stroke="#00f5d4" stroke-width="0.6"/>
+      <!-- 3x ToF Distance Sensors (Left 45°, Center, Right -45°) -->
+      <circle cx="{lf:.1f}" cy="0" r="1.5" fill="#e63946" stroke="#ffffff" stroke-width="0.5"/>
+      <circle cx="{lf-0.007*scale_px:.1f}" cy="{-wc*0.75:.1f}" r="1.3" fill="#e63946" stroke="#ffffff" stroke-width="0.4"/>
+      <circle cx="{lf-0.007*scale_px:.1f}" cy="{wc*0.75:.1f}" r="1.3" fill="#e63946" stroke="#ffffff" stroke-width="0.4"/>
+      <!-- Forward Laser Guidance Beam -->
+      <line x1="{lf:.1f}" y1="0" x2="{lf+0.020*scale_px:.1f}" y2="0" stroke="#e63946" stroke-width="0.8" stroke-dasharray="2,2"/>
+    </g>
+    
+    <!-- Legend -->
+    <text x="35" y="20" fill="#888888" font-size="10" font-family="sans-serif">Maze Grid: {grid_rows}×{grid_cols} ({maze_w_m:.1f}m × {maze_h_m:.1f}m)</text>
+    <text x="35" y="32" fill="#ffd166" font-size="10" font-family="sans-serif">── Trajectory Path (Explore, Pirouette, Return &amp; Sprint)</text>
+    <text x="{w-210}" y="20" fill="#48cae4" font-size="10" font-family="sans-serif">🎬 Replay: {anim_dur:.1f}s Loop</text>
+  </svg>
+</div>'''
+            return svg
+        
+        # Otherwise: Render Square trajectory (Milestone 1)
         start_x = data.get("start_x", traj[0][0])
         start_y = data.get("start_y", traj[0][1])
         th0 = traj[0][2]
@@ -117,6 +332,7 @@ def generate_trajectory_svg(trajectory_file):
             return sx, sy
         
         pts = [to_svg(pt[0], pt[1]) for pt in traj]
+        path_d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f} " + " ".join(f"L {x:.1f},{y:.1f}" for x, y in pts[1:])
         polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
         
         ideal_svg_pts = [to_svg(c[0], c[1]) for c in ideal_pts]
@@ -159,8 +375,41 @@ def generate_trajectory_svg(trajectory_file):
         # PCB contour points: chamfered 45-deg nose for ToF sensor brackets
         pcb_d = f"M {-lr:.1f},{-wc:.1f} L {lf-0.015*scale_px:.1f},{-wc:.1f} L {lf:.1f},{-wc*0.4:.1f} L {lf:.1f},{wc*0.4:.1f} L {lf-0.015*scale_px:.1f},{wc:.1f} L {-lr:.1f},{wc:.1f} Z"
         
-        path_d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f} " + " ".join(f"L {x:.1f},{y:.1f}" for x, y in pts[1:])
-        anim_dur = max(6.0, min(30.0, len(traj) * 0.05))
+        # Subsample trajectory for smooth, lightweight keyframed animation
+        step_size = max(1, len(traj) // 250)
+        sub_traj = traj[::step_size]
+        if sub_traj[-1] != traj[-1]:
+            sub_traj.append(traj[-1])
+        
+        unwrapped_thetas = []
+        cum_th = sub_traj[0][2]
+        unwrapped_thetas.append(cum_th)
+        for i in range(len(sub_traj) - 1):
+            d_th = sub_traj[i+1][2] - sub_traj[i][2]
+            while d_th > math.pi: d_th -= 2 * math.pi
+            while d_th < -math.pi: d_th += 2 * math.pi
+            cum_th += d_th
+            unwrapped_thetas.append(cum_th)
+        
+        has_timestamps = len(sub_traj[0]) > 3 and len(sub_traj[-1]) > 3
+        if has_timestamps:
+            t0 = sub_traj[0][3]
+            t_end = sub_traj[-1][3]
+            total_duration = max(0.5, t_end - t0)
+            times = [max(0.0, min(1.0, (pt[3] - t0) / total_duration)) for pt in sub_traj]
+            times[0] = 0.0
+            times[-1] = 1.0
+            for ti in range(1, len(times)):
+                if times[ti] < times[ti - 1]:
+                    times[ti] = times[ti - 1]
+            key_times_attr = f'keyTimes="{"; ".join(f"{t:.4f}" for t in times)}"'
+            anim_dur = max(6.0, min(35.0, total_duration))
+        else:
+            key_times_attr = ""
+            anim_dur = max(6.0, min(30.0, len(traj) * 0.05))
+            
+        trans_vals = "; ".join(f"{to_svg(pt[0], pt[1])[0]:.1f} {to_svg(pt[0], pt[1])[1]:.1f}" for pt in sub_traj)
+        rot_vals = "; ".join(f"{-math.degrees(th):.1f}" for th in unwrapped_thetas)
         
         rollout_svg = f'<circle cx="{final_sx:.1f}" cy="{final_sy:.1f}" r="3.5" fill="#6c757d" stroke="#fff" stroke-width="1.0" stroke-dasharray="2,1"/><text x="{final_sx+6:.1f}" y="{final_sy+3:.1f}" fill="#888888" font-size="9" font-family="sans-serif">Final Rest (+{rollout_dist_cm:.1f}cm rollout)</text>' if rollout_dist_cm > 4.0 else ''
         
@@ -184,6 +433,8 @@ def generate_trajectory_svg(trajectory_file):
     
     <!-- True 1:1 Scale UCT Micromouse Animated Vehicle -->
     <g id="uct_mouse_robot">
+      <animateTransform attributeName="transform" type="translate" values="{trans_vals}" {key_times_attr} dur="{anim_dur:.1f}s" repeatCount="indefinite" />
+      <animateTransform attributeName="transform" type="rotate" additive="sum" values="{rot_vals}" {key_times_attr} dur="{anim_dur:.1f}s" repeatCount="indefinite" />
       <!-- Left & Right Wheels -->
       <rect x="{-wrad:.1f}" y="{-ww:.1f}" width="{2*wrad:.1f}" height="{wth:.1f}" rx="1.5" fill="#343a40" stroke="#111111" stroke-width="0.8"/>
       <rect x="{-wrad:.1f}" y="{ww-wth:.1f}" width="{2*wrad:.1f}" height="{wth:.1f}" rx="1.5" fill="#343a40" stroke="#111111" stroke-width="0.8"/>
@@ -204,8 +455,6 @@ def generate_trajectory_svg(trajectory_file):
       <circle cx="{lf-0.007*scale_px:.1f}" cy="{wc*0.75:.1f}" r="1.3" fill="#e63946" stroke="#ffffff" stroke-width="0.4"/>
       <!-- Forward Laser Guidance Beam -->
       <line x1="{lf:.1f}" y1="0" x2="{lf+0.020*scale_px:.1f}" y2="0" stroke="#e63946" stroke-width="0.8" stroke-dasharray="2,2"/>
-      <!-- Motion Animation binding -->
-      <animateMotion path="{path_d}" dur="{anim_dur:.1f}s" repeatCount="indefinite" rotate="auto" />
     </g>
     
     <!-- Legend -->
@@ -216,7 +465,8 @@ def generate_trajectory_svg(trajectory_file):
   </svg>
 </div>'''
         return svg
-    except Exception:
+    except Exception as e:
+        print(f"[Grader Warning] SVG trajectory rendering failed: {e}")
         return ""
 
 def load_test_suite(assignment_name):
@@ -429,7 +679,7 @@ def main():
             return
 
     # 4. Compilation if Simulink track
-    client_bin = "simulink_client.exe"
+    client_bin = os.path.join(tempfile.gettempdir(), "simulink_client")
     if track == "simulink":
         print("[Grader] Compiling Simulink deployment code...")
         
@@ -527,7 +777,20 @@ def main():
     session_start_time = time.time()
     MAX_SESSION_SECONDS = 360.0  # 6.0 minutes hard budget for whole autograder suite
     
-    for idx, (run_name, weight, imb_val, slip_val, is_hidden) in enumerate(test_runs):
+    for idx, run_info in enumerate(test_runs):
+        if len(run_info) >= 9:
+            run_name, weight, imb_val, slip_val, is_hidden, run_rows, run_cols, run_seed, run_max_time = run_info[:9]
+        elif len(run_info) >= 7:
+            run_name, weight, imb_val, slip_val, is_hidden, run_rows, run_cols = run_info[:7]
+            run_seed = 42 + idx
+            run_max_time = getattr(test_suite, "TIME_LIMIT", 120.0)
+        else:
+            run_name, weight, imb_val, slip_val, is_hidden = run_info[:5]
+            run_rows = getattr(test_suite, "MAZE_ROWS", 4)
+            run_cols = getattr(test_suite, "MAZE_COLS", 6)
+            run_seed = 42 + idx
+            run_max_time = getattr(test_suite, "TIME_LIMIT", 50.0)
+
         elapsed_total = time.time() - session_start_time
         if elapsed_total > MAX_SESSION_SECONDS:
             print(f"[Grader] Overall autograder time budget exceeded ({elapsed_total:.1f}s > {MAX_SESSION_SECONDS}s). Skipping {run_name}.")
@@ -544,51 +807,10 @@ def main():
             })
             continue
 
-        print(f"\n[Grader] === Executing {run_name} (Weight: {weight*100:.0f}%, Imbalance: {imb_val}, Slip: {slip_val}) ===")
+        print(f"\n[Grader] === Executing {run_name} (Weight: {weight*100:.0f}%, Imbalance: {imb_val}, Slip: {slip_val}, Grid: {run_rows}x{run_cols}) ===")
         
-<<<<<<< HEAD
-        sim_cmd = [
-            sys.executable,
-            "-u",
-            sim_script,
-            "--headless",
-            "--map", getattr(test_suite, "MAP", "empty"),
-            "--imbalance", str(imb_val),
-            "--slip", str(slip_val),
-            "--json-log", TRAJECTORY_JSON,
-            "--video", VIDEO_PATH if idx == 0 else "", # only record video for first run
-            "--max-time", str(getattr(test_suite, "TIME_LIMIT", 45.0)),
-            "--seed", str(getattr(test_suite, "SEED", 42) + idx)
-        ]
-        
-        # Clean up old trajectory file
-        if os.path.exists(TRAJECTORY_JSON):
-            try:
-                os.remove(TRAJECTORY_JSON)
-            except Exception:
-                pass
-                
-        sim_log_path = "simulator_backend.log"
-        if os.path.exists(sim_log_path):
-            try:
-                os.remove(sim_log_path)
-            except Exception:
-                pass
-                
-        try:
-            sim_log_file = open(sim_log_path, "w")
-            sim_proc = subprocess.Popen(
-                sim_cmd,
-                stdout=sim_log_file,
-                stderr=sim_log_file,
-                text=True
-            )
-            sim_log_file.close()
-        except Exception as e:
-            write_results(0.0, f"System Error: Failed to start simulation backend: {e}")
-            return
-=======
         def run_single_simulation(seed_val, is_video):
+            active_sim_seed = seed_val if seed_val is not None else run_seed
             sim_cmd = [
                 sys.executable,
                 "-u",
@@ -598,8 +820,10 @@ def main():
                 "--imbalance", str(imb_val),
                 "--slip", str(slip_val),
                 "--json-log", TRAJECTORY_JSON,
-                "--max-time", str(getattr(test_suite, "TIME_LIMIT", 50.0)),
-                "--seed", str(seed_val)
+                "--max-time", str(run_max_time),
+                "--seed", str(active_sim_seed),
+                "--rows", str(run_rows),
+                "--cols", str(run_cols)
             ]
             if is_video:
                 os.makedirs(os.path.dirname(os.path.abspath(VIDEO_PATH)), exist_ok=True)
@@ -608,7 +832,6 @@ def main():
                 sim_cmd.extend(["--config", student_config])
             elif assignment_sim_config and os.path.exists(assignment_sim_config):
                 sim_cmd.extend(["--config", assignment_sim_config])
->>>>>>> b669239fedc32798e340c3d6d0cb08955a31f4ac
             
             if os.path.exists(TRAJECTORY_JSON):
                 try: os.remove(TRAJECTORY_JSON)
@@ -627,102 +850,7 @@ def main():
                     stderr=sim_log_file,
                     text=True
                 )
-<<<<<<< HEAD
-            else:
-                write_results(
-                    0.0,
-                    f"System Error: Simulator failed to start or bind to port 8000 within 20s timeout.\n\n"
-                    f"--- Simulator Backend Log (Last 15 lines) ---\n{log_tail}"
-                )
-            return
-            
-        # Run Student Client
-        client_env = os.environ.copy()
-        client_env["GRADESCOPE_AUTOGRADER"] = "1"
-        
-        if track == "python":
-            client_cmd = [sys.executable, main_file]
-            python_paths = [SOURCE_DIR, os.path.dirname(main_file), os.path.join(repo_root, "python")]
-            if "PYTHONPATH" in os.environ:
-                python_paths.append(os.environ["PYTHONPATH"])
-            client_env["PYTHONPATH"] = os.path.pathsep.join(python_paths)
-            client_cwd = os.path.dirname(main_file)
-        else:
-            client_cmd = [client_bin]
-            client_cwd = "."
-            
-        try:
-            client_proc = subprocess.Popen(
-                client_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=client_env,
-                cwd=client_cwd,
-                text=True
-            )
-        except Exception as e:
-            sim_proc.send_signal(signal.SIGINT)
-            try: sim_proc.wait(timeout=2.0)
-            except Exception: sim_proc.kill()
-            write_results(0.0, f"Execution Error: Failed to start student script/binary: {e}")
-            return
-            
-        # Monitor
-        time_limit = getattr(test_suite, "TIME_LIMIT", 45.0)
-        max_duration = time_limit + 10.0
-        start_time = time.time()
-        client_exited = False
-        timed_out = False
-        
-        while time.time() - start_time < max_duration:
-            if not client_exited and client_proc.poll() is not None:
-                client_exited = True
-                time.sleep(1.5)
-            if sim_proc.poll() is not None:
-                break
-            time.sleep(0.5)
-        else:
-            timed_out = True
-            
-        # Cleanup
-        if client_proc.poll() is None:
-            client_proc.terminate()
-            try: client_proc.wait(timeout=2.0)
-            except Exception: client_proc.kill()
-            
-        if sim_proc.poll() is None:
-            sim_proc.send_signal(signal.SIGINT)
-            try: sim_proc.wait(timeout=3.0)
-            except Exception: sim_proc.kill()
-            
-        client_stdout, client_stderr = client_proc.communicate()
-        
-        sim_stdout = ""
-        if os.path.exists(sim_log_path):
-            try:
-                with open(sim_log_path, "r") as f:
-                    sim_stdout = f.read()
-            except Exception:
-                pass
-                
-        # Evaluate
-        run_score = 0.0
-        run_feedback = ""
-        
-        if not os.path.exists(TRAJECTORY_JSON) or os.path.getsize(TRAJECTORY_JSON) == 0:
-            run_feedback = (
-                f"Execution Error: No simulation trajectory was recorded.\n"
-                f"Your script or binary did not connect to the simulator on port 8000.\n\n"
-                f"--- Console Output (stdout) ---\n{client_stdout}\n\n"
-                f"--- Error Output (stderr) ---\n{client_stderr}\n"
-            )
-        else:
-            try:
-                raw_score, run_feedback = test_suite.evaluate_run(TRAJECTORY_JSON)
-                run_score = raw_score
-=======
                 sim_log_file.close()
->>>>>>> b669239fedc32798e340c3d6d0cb08955a31f4ac
             except Exception as e:
                 return {
                     "score": 0.0,
@@ -899,7 +1027,7 @@ def main():
         run_visibility = "after_due_date" if is_hidden else "visible"
         
         # Generate HTML visualizations
-        svg_html = generate_trajectory_svg(TRAJECTORY_JSON)
+        svg_html = generate_trajectory_svg(TRAJECTORY_JSON, assignment_name)
         
         import html
         escaped_feedback = html.escape(run_feedback)
@@ -944,10 +1072,11 @@ def main():
     final_score = round(total_score, 2)
     final_percent = round((final_score / 60.0) * 100.0, 1)
     
+    assignment_display_title = assignment_name.replace("_", " ").title()
     results = {
         "score": final_score,
         "max_score": 60.0,
-        "output": f"<h3 style='margin-top:0;'>Milestone 1 Autograder Trajectory Score: {final_score:.2f} / 60.00 pts ({final_percent}%)</h3>",
+        "output": f"<h3 style='margin-top:0;'>{assignment_display_title} Autograder Trajectory Score: {final_score:.2f} / 60.00 pts ({final_percent}%)</h3>",
         "output_format": "html",
         "visibility": "visible",
         "tests": gradescope_tests

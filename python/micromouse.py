@@ -41,7 +41,9 @@ class Micromouse:
             "gy": 0.0,
             "gz": 0.0,
             "current": 0.0,
-            "bdcr": 0
+            "bdcr": 0,
+            "rows": 4,
+            "cols": 6
         }
         self.last_packet = {}
         self.tracked_deltas = set()

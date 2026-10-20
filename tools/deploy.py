@@ -643,7 +643,8 @@ if __name__ == "__main__":
             if build_success and os.path.exists(mpy_bin_path):
                 os.makedirs(os.path.dirname(untracked_bin_path), exist_ok=True)
                 shutil.copy(mpy_bin_path, untracked_bin_path)
-                print(f"    -> Copied compiled firmware to {untracked_bin_path}")
+                shutil.copy(mpy_bin_path, tracked_bin_path)
+                print(f"    -> Copied compiled firmware to {untracked_bin_path} and {tracked_bin_path}")
                 active_bin_path = untracked_bin_path
             else:
                 # Fallback checks

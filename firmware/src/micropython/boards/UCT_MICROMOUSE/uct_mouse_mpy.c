@@ -471,6 +471,16 @@ static mp_obj_t mpy_uct_mouse_clear_display(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_clear_display_obj, mpy_uct_mouse_clear_display);
 
+// 7m. uct_mouse.get_maze_dimensions() -> (rows, cols)
+static mp_obj_t mpy_uct_mouse_get_maze_dimensions(void) {
+    mp_obj_t tuple[2] = {
+        mp_obj_new_int(4),
+        mp_obj_new_int(6)
+    };
+    return mp_obj_new_tuple(2, tuple);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_get_maze_dimensions_obj, mpy_uct_mouse_get_maze_dimensions);
+
 // Define module globals table
 static const mp_rom_map_elem_t uct_mouse_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_uct_mouse) },
@@ -502,6 +512,8 @@ static const mp_rom_map_elem_t uct_mouse_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_display_text), MP_ROM_PTR(&mpy_uct_mouse_display_text_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_display_text), MP_ROM_PTR(&mpy_uct_mouse_display_text_obj) },
     { MP_ROM_QSTR(MP_QSTR_clear_display),MP_ROM_PTR(&mpy_uct_mouse_clear_display_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_maze_dimensions), MP_ROM_PTR(&mpy_uct_mouse_get_maze_dimensions_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_maze_size),       MP_ROM_PTR(&mpy_uct_mouse_get_maze_dimensions_obj) },
 };
 static MP_DEFINE_CONST_DICT(uct_mouse_module_globals, uct_mouse_module_globals_table);
 

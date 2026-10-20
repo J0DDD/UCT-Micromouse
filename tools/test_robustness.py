@@ -34,7 +34,7 @@ DEFAULT_M2_TESTS = [
     {"name": "3. Neg. Imbalance (-12%, Seed 256)", "map": "random", "imbalance": -0.12, "slip": 0.03, "seed": 256},
     {"name": "4. High Slip (8%, Seed 512)", "map": "random", "imbalance": 0.06, "slip": 0.08, "seed": 512},
     {"name": "5. Alternate Maze (Seed 1024)", "map": "random", "imbalance": 0.08, "slip": 0.04, "seed": 1024},
-    {"name": "6. Extreme Track (+14%/8%, Seed 2048)", "map": "random", "imbalance": 0.14, "slip": 0.08, "seed": 2048},
+    {"name": "6. 8x8 Championship Arena (Seed 2048)", "map": "random", "imbalance": 0.08, "slip": 0.05, "seed": 2048, "rows": 8, "cols": 8},
 ]
 
 def unwrap_angles(thetas):
@@ -284,6 +284,10 @@ def run_single_test(script_path, test_cfg, task="milestone1", port=8000):
         "--json-log", traj_file,
         "--max-time", max_time
     ]
+    if "rows" in test_cfg and test_cfg["rows"] is not None:
+        sim_cmd.extend(["--rows", str(test_cfg["rows"])])
+    if "cols" in test_cfg and test_cfg["cols"] is not None:
+        sim_cmd.extend(["--cols", str(test_cfg["cols"])])
 
     env["UCT_MICROMOUSE_PORT"] = str(port)
 
@@ -332,6 +336,8 @@ def main():
     parser.add_argument("--task", choices=["milestone1", "milestone2", "task1", "task2"], default="auto", help="Task milestone type (default: auto-detect from script name).")
     parser.add_argument("--runs", type=int, default=6, help="Number of test runs to execute.")
     parser.add_argument("--randomize", action="store_true", help="Use randomized perturbations instead of standard suite.")
+    parser.add_argument("--rows", type=int, default=None, help="Force maze grid rows (e.g. 8).")
+    parser.add_argument("--cols", type=int, default=None, help="Force maze grid cols (e.g. 8).")
     args = parser.parse_args()
 
     chosen_script = args.script or args.script_pos or "python/milestone1_square.py"
@@ -365,6 +371,13 @@ def main():
             slp = round(random.uniform(0.02, 0.12), 2)
             sd = random.randint(100, 9999)
             tests.append({"name": f"Random Track {i+1} (Imb: {imb:+.0%}, Slip: {slp:.0%})", "map": map_type, "imbalance": imb, "slip": slp, "seed": sd})
+
+    if args.rows is not None or args.cols is not None:
+        for t in tests:
+            if args.rows is not None:
+                t["rows"] = args.rows
+            if args.cols is not None:
+                t["cols"] = args.cols
 
     results = []
     detail_header = "Phases (T/P/R/S)" if task in ("milestone2", "task2") else "Parking Err"

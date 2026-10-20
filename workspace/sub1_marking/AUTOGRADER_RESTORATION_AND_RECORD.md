@@ -7,7 +7,7 @@
 ## 1. Fast Restoration & Deployment Reference
 
 * **Deployment ZIP Archive:** [`workspace/sub1_marking/autograder_deployment_backup/milestone1_square_autograder.zip`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/workspace/sub1_marking/autograder_deployment_backup/milestone1_square_autograder.zip) (also in `workspace/deploy/milestone1_square_autograder.zip`).
-* **Gradescope Assignment Target:** Course `1337806`, Assignment `8312193` (Milestone 1: 1m × 1m Square).
+* **Gradescope Assignment Target:** Course `1337806`, Assignment `8312189` (Milestone 1: 1m × 1m Square).
 * **Single Rebuild Command:** To recompile the autograder bundle from repository sources at any time:
   ```bash
   python tools/autograder/build_zip.py
@@ -53,8 +53,9 @@ Each test trial evaluates the recorded trajectory against 4 physical criteria:
 
 ## 4. Key Algorithmic Guarantees
 
-### A. Turn-Bounded Leg Segmentation
-* Straight legs are segmented cleanly using detected corner turns ($\omega > 18.0^\circ/\text{s}$).
+### A. Turn-Bounded Leg Segmentation & PID Wobble Immunity
+* Straight legs are segmented cleanly using detected corner turns.
+* **Angular Change Filter ($\Delta\theta \ge 35^\circ$):** Candidate turn clusters must accumulate at least $35.0^\circ$ of net angular rotation. This prevents minor straight-line PID steering oscillations (which may briefly spike $\omega > 18^\circ/\text{s}$ for 3–4 simulation ticks with only $2^\circ\text{–}7^\circ$ total deflection) from being misclassified as square corners and collapsing intermediate straight legs.
 * **Startup Immunity:** Sensor calibration routines (e.g. 50-sample gyro drift loops) or initial ramp-ups before movement never create spurious $2\text{ cm}$ "mini-legs".
 * **Oscillation Immunity:** Intermediate speed dips or control loop hesitations during a leg remain grouped within that leg, guaranteeing exact 4-leg alignment.
 
@@ -62,10 +63,12 @@ Each test trial evaluates the recorded trajectory against 4 physical criteria:
 * **Zero Forward Motion Requirement:** Turn 4 is detected purely from rotational kinematics ($\omega > 18.0^\circ/\text{s}$) at the completion of Leg 4. Students are never required to nudge forward to trigger corner detection.
 * **Rollout Protection:** The return offset is searched across all trajectory samples from $D_{\text{cum}} \ge 2.50\text{ m}$ through completion. Extra coasting or forward movement past the origin incurs **$0$ penalty** and does not distort the evaluated parking accuracy.
 
-### C. DOMPurify-Safe Inline Vector Animation
+### C. DOMPurify-Safe Inline Vector Animation & Kinematic Accuracy
 * Video files and base64 GIFs are stripped by Gradescope's DOMPurify sanitizer.
 * The autograder embeds a native SMIL-animated SVG vector model directly into the feedback report.
 * Renders the authentic UCT Micromouse in **true 1:1 physical scale** ($105\text{ mm} \times 96\text{ mm}$, $65\text{ mm}$ wheels, dark green PCB, gold traces, OLED module, and 3x red ToF lasers) smoothly replaying the student's exact run.
+* **Dual SMIL `<animateTransform>` Engine:** Replaces `<animateMotion rotate="auto">` with decoupled `type="translate"` and `type="rotate" additive="sum"`. This guarantees that in-place turns, spins, and heading changes accurately reflect the vehicle's true unwrapped heading $\theta(t)$ without depending on path tangent derivatives $(\Delta y / \Delta x)$.
+* **Physical Time Fidelity via `keyTimes`:** Simulation timestamps $(t_k)$ are normalized and assigned to SMIL `keyTimes="0;...;1"`. This preserves exact physical speed variations, acceleration profiles, corner turning durations, and stationary pauses rather than forcing uniform spatial interpolation.
 
 ---
 
