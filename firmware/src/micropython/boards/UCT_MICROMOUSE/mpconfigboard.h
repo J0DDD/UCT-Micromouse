@@ -1,4 +1,6 @@
-#define MICROPY_HW_BOARD_NAME       "UCT-MICROMOUSE"
+#include "firmware_version.h"
+
+#define MICROPY_HW_BOARD_NAME       "UCT-MICROMOUSE " UCT_FW_VERSION_STR
 #define MICROPY_HW_MCU_NAME         "STM32L476VE"
 #define MICROPY_HW_FLASH_FS_LABEL   "UCT_MMOUSE"
 
@@ -74,6 +76,7 @@ void board_start_soft_reset(void);
 #define MICROPY_BOARD_STARTUP       board_startup
 #define MICROPY_BOARD_EARLY_INIT    board_early_init
 #define MICROPY_VM_HOOK_LOOP        kernel_background_tick();
+#define MICROPY_INTERNAL_EVENT_HOOK kernel_background_tick();
 #define MICROPY_BOARD_START_SOFT_RESET(state) board_start_soft_reset()
 
 // Expose the custom uct_mouse module as a built-in module

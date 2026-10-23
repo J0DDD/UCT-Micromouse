@@ -166,6 +166,9 @@ void board_early_init(void) {
     USART1->BRR = 694; // Exact 115200 baud at 80.000 MHz (from 8 MHz HSE crystal)
     __HAL_UART_ENABLE(&huart1);
 
+    // Initialize SPI2 for ZD25WQ80C external NOR flash communication
+    MX_SPI2_Init();
+
     // Set C-Kernel logger UART reference
     extern void serial_interface_set_huart(UART_HandleTypeDef *huart);
     serial_interface_set_huart(&huart1);

@@ -1,4 +1,5 @@
 #include "micromouse_kernel.h"
+#include "firmware_version.h"
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h> // For offsetof()
@@ -55,6 +56,18 @@ static char kernel_title[20] = "   PikaScript     ";
 static char kernel_title[20] = "   Simulink       ";
 #endif
 
+// Machine-scannable ASCII watermark embedded directly into flash .rodata
+const char g_firmware_watermark[] __attribute__((used)) = UCT_FW_WATERMARK;
+const char g_firmware_label[] __attribute__((used)) = UCT_FW_LABEL;
+
+const char* kernel_get_firmware_watermark(void) {
+    return g_firmware_watermark;
+}
+
+const char* kernel_get_version_str(void) {
+    return g_firmware_label;
+}
+
 // Hardware-specific wiring polarities (1 = normal, -1 = reversed)
 static volatile int16_t polarity_l = 1;
 static volatile int16_t polarity_r = 1;
@@ -94,6 +107,10 @@ static const TelemetryField_t telemetry_table[] = {
 static const int num_telemetry_fields = sizeof(telemetry_table) / sizeof(telemetry_table[0]);
 
 void kernel_init(void) {
+    // Explicit reference to guarantee watermark retention in flash under --gc-sections
+    volatile const char *p_wm = g_firmware_watermark;
+    (void)p_wm;
+
     memset(&current_state, 0, sizeof(KernelState_t));
     memset(&shadow_state, 0, sizeof(KernelState_t));
     watchdog_timer_ms = 0;
@@ -222,6 +239,16 @@ void kernel_parse_downlink(const char* rx_string) {
         }
         if (strstr(rx_string, "\"bootloader\":1") != NULL) {
             jump_to_bootloader();
+        }
+        if (strstr(rx_string, "\"version\":1") != NULL || strstr(rx_string, "\"ver\":1") != NULL) {
+            char ver_buf[160];
+            int vlen = snprintf(ver_buf, sizeof(ver_buf), "{\"version\":\"%s\",\"id\":\"%s\"}\r\n", 
+                                kernel_get_version_str(), kernel_get_firmware_watermark());
+            extern UART_HandleTypeDef* serial_interface_get_huart(void);
+            UART_HandleTypeDef *huart = serial_interface_get_huart();
+            if (huart) {
+                HAL_UART_Transmit(huart, (uint8_t*)ver_buf, vlen, 100);
+            }
         }
     }
     else if (strstr(rx_string, "\"p\":") != NULL) {

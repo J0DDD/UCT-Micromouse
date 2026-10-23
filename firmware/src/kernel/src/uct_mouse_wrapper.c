@@ -123,3 +123,11 @@ void uct_mouse_log_custom(PikaObj *self, char *json_str) {
 int uct_mouse_get_ticks_ms(PikaObj *self) {
     return (int)HAL_GetTick();
 }
+
+char* uct_mouse_get_version(PikaObj *self) {
+    return (char*)kernel_get_version_str();
+}
+
+char* uct_mouse_version(PikaObj *self) {
+    return (char*)kernel_get_version_str();
+}

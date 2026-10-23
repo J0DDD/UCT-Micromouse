@@ -72,4 +72,8 @@ void kernel_set_oled_line4(const char* text);
 void kernel_set_oled_line(int line, const char* text);
 void kernel_logger_write_custom(const char* json_str);
 
+// --- Firmware Identification & Watermark ---
+const char* kernel_get_firmware_watermark(void);
+const char* kernel_get_version_str(void);
+
 #endif // MICROMOUSE_KERNEL_H

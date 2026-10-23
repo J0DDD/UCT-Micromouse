@@ -100,20 +100,22 @@ void writeReg(uint8_t reg, uint8_t value) {
   }
 }
 
-// Write a 16-bit register
+// Write a 16-bit register (VL53L0X registers are big-endian: MSB first)
 void writeReg16Bit(uint8_t reg, uint16_t value){
-
-  memcpy(msgBuffer, &value, 2); // Assign the value to the buffer.
+  msgBuffer[0] = (uint8_t)((value >> 8) & 0xFF);
+  msgBuffer[1] = (uint8_t)(value & 0xFF);
   i2cStat = HAL_I2C_Mem_Write(VL53L0X_I2C_Handler, g_i2cAddr | I2C_WRITE, reg, 1, msgBuffer, 2, I2C_TIMEOUT);
   if (i2cStat != HAL_OK) {
     restartI2C(VL53L0X_I2C_Handler);
   }
 }
 
-// Write a 32-bit register
+// Write a 32-bit register (VL53L0X registers are big-endian: MSB first)
 void writeReg32Bit(uint8_t reg, uint32_t value){
-
-  memcpy(msgBuffer, &value, 4); // Assign the value to the buffer.
+  msgBuffer[0] = (uint8_t)((value >> 24) & 0xFF);
+  msgBuffer[1] = (uint8_t)((value >> 16) & 0xFF);
+  msgBuffer[2] = (uint8_t)((value >> 8) & 0xFF);
+  msgBuffer[3] = (uint8_t)(value & 0xFF);
   i2cStat = HAL_I2C_Mem_Write(VL53L0X_I2C_Handler, g_i2cAddr | I2C_WRITE, reg, 1, msgBuffer, 4, I2C_TIMEOUT);
   if (i2cStat != HAL_OK) {
     restartI2C(VL53L0X_I2C_Handler);
@@ -133,7 +135,7 @@ uint8_t readReg(uint8_t reg) {
   return value;
 }
 
-// Read a 16-bit register
+// Read a 16-bit register (VL53L0X registers are big-endian: MSB first)
 uint16_t readReg16Bit(uint8_t reg) {
   uint16_t value;
 
@@ -141,19 +143,22 @@ uint16_t readReg16Bit(uint8_t reg) {
   if (i2cStat != HAL_OK) {
     restartI2C(VL53L0X_I2C_Handler);
   }
-  memcpy(&value, msgBuffer, 2);
+  value = (uint16_t)(((uint16_t)msgBuffer[0] << 8) | (uint16_t)msgBuffer[1]);
 
   return value;
 }
 
-// Read a 32-bit register
+// Read a 32-bit register (VL53L0X registers are big-endian: MSB first)
 uint32_t readReg32Bit(uint8_t reg) {
   uint32_t value;
   i2cStat = HAL_I2C_Mem_Read(VL53L0X_I2C_Handler, g_i2cAddr | I2C_READ, reg, 1, msgBuffer, 4, I2C_TIMEOUT);
   if (i2cStat != HAL_OK) {
     restartI2C(VL53L0X_I2C_Handler);
   }
-  memcpy(&value, msgBuffer, 4);
+  value = ((uint32_t)msgBuffer[0] << 24) |
+          ((uint32_t)msgBuffer[1] << 16) |
+          ((uint32_t)msgBuffer[2] << 8)  |
+          (uint32_t)msgBuffer[3];
 
   return value;
 }
@@ -161,9 +166,7 @@ uint32_t readReg32Bit(uint8_t reg) {
 // Write an arbitrary number of bytes from the given array to the sensor,
 // starting at the given register
 void writeMulti(uint8_t reg, uint8_t const *src, uint8_t count){
-
-  memcpy(msgBuffer, src, 4);
-  i2cStat = HAL_I2C_Mem_Write(VL53L0X_I2C_Handler, g_i2cAddr | I2C_WRITE, reg, 1, msgBuffer, count, I2C_TIMEOUT);
+  i2cStat = HAL_I2C_Mem_Write(VL53L0X_I2C_Handler, g_i2cAddr | I2C_WRITE, reg, 1, (uint8_t*)src, count, I2C_TIMEOUT);
 }
 
 // Read an arbitrary number of bytes from the sensor, starting at the given
@@ -446,16 +449,11 @@ void initVL53L0(VL53L0_t *tof, uint16_t signalRate){
     return;
   }
 
-  uint8_t PreRange = 18;
-  uint8_t FinalRange = 14;
-
-  // Configure VCSEL pulse periods for enhanced signal sensitivity in maze cells.
+  // Configure standard signal rate limit and timing budget (33ms / 30Hz) for fast, robust maze ranging (20mm - 1200mm)
   if (!setSignalRateLimit(signalRate)) { restartI2C(tof->I2Cx); }
-  if (!setVcselPulsePeriod(VcselPeriodPreRange, PreRange)) { restartI2C(tof->I2Cx); }
-  if (!setVcselPulsePeriod(VcselPeriodFinalRange, FinalRange)) { restartI2C(tof->I2Cx); }
+  setMeasurementTimingBudget(33000);
 
   // Start continuous back-to-back ranging (SYSRANGE_START = 0x02).
-  // Operates at the sensor's physical conversion rate (~20 ms / 50 Hz per sensor).
   startContinuous(0);
   setAddress_VL53L0X(tof->Address);
   tof->initialized = 1;
@@ -512,11 +510,15 @@ void getVL53L0(VL53L0_t* TOF_result){
       return; // Cool-down active: skip read to save tick execution budget
   }
 
+  i2cStat = HAL_OK;
   VL53L0X_I2C_Handler = TOF_result->I2Cx;
   g_i2cAddr = TOF_result->Address;
 
   VL53L0_t distanceStr; // Updated type
   distanceStr.rangeStatus = 255;
+  distanceStr.rawDistance = 0;
+  distanceStr.Signal = 0;
+  distanceStr.Ambient = 0;
   uint16_t distance = readRangeContinuousMillimeters(&distanceStr);
 
   if (i2cStat != HAL_OK) {
@@ -541,10 +543,13 @@ void getVL53L0(VL53L0_t* TOF_result){
     TOF_result->Status = distanceStr.rangeStatus;
     TOF_result->Ambient = distanceStr.Ambient;
     TOF_result->Signal = distanceStr.Signal;
+    TOF_result->rawDistance = distanceStr.rawDistance;
   } else {
     // Open air / no target / signal fail -> strictly 8190
     TOF_result->Distance = 8190;
     TOF_result->Status = distanceStr.rangeStatus;
+    TOF_result->Signal = distanceStr.Signal;
+    TOF_result->rawDistance = distanceStr.rawDistance;
   }
 
   
@@ -1151,24 +1156,12 @@ void stopContinuous(void)
 uint16_t readRangeContinuousMillimeters( VL53L0_t *extraStats) {
   uint8_t tempBuffer[12];
   uint16_t temp;
-  #ifdef COMPILED_BY_SIMULINK
   if ((readReg(RESULT_INTERRUPT_STATUS) & 0x07) == 0) {
     if (extraStats != NULL) {
       extraStats->rangeStatus = 255; // Custom status indicating "not ready"
     }
     return 65535;
   }
-  #else
-  startTimeout();
-  volatile uint32_t timeout_counter = 10000;
-  while ((readReg(RESULT_INTERRUPT_STATUS) & 0x07) == 0) {
-    if (--timeout_counter == 0 || i2cStat != HAL_OK || checkTimeoutExpired())
-    {
-      g_isTimeout = true;
-      return 65535;
-    }
-  }
-  #endif
   if (extraStats == NULL) {
     // assumptions: Linearity Corrective Gain is 1000 (default);
     // fractional ranging is not enabled

@@ -1,6 +1,7 @@
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "micromouse_kernel.h"
+#include "firmware_version.h"
 #include "ZD25WQ80C.h"
 
 extern volatile bool mouse_initialized;
@@ -45,8 +46,10 @@ static mp_obj_t mpy_uct_mouse_init(void) {
     
     extern void MX_I2C1_Init(void);
     extern void MX_I2C2_Init(void);
+    extern void MX_SPI2_Init(void);
     MX_I2C1_Init();
     MX_I2C2_Init();
+    MX_SPI2_Init();
 
     // Enable GPIO clocks for motors, encoders, LEDs
     __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -481,6 +484,20 @@ static mp_obj_t mpy_uct_mouse_get_maze_dimensions(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_get_maze_dimensions_obj, mpy_uct_mouse_get_maze_dimensions);
 
+// 7n. uct_mouse.get_version() -> str
+static mp_obj_t mpy_uct_mouse_get_version(void) {
+    const char *ver = kernel_get_version_str();
+    return mp_obj_new_str(ver, strlen(ver));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_get_version_obj, mpy_uct_mouse_get_version);
+
+// 7o. uct_mouse.get_firmware_id() -> str
+static mp_obj_t mpy_uct_mouse_get_firmware_id(void) {
+    const char *id = kernel_get_firmware_watermark();
+    return mp_obj_new_str(id, strlen(id));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mpy_uct_mouse_get_firmware_id_obj, mpy_uct_mouse_get_firmware_id);
+
 // Define module globals table
 static const mp_rom_map_elem_t uct_mouse_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_uct_mouse) },
@@ -514,6 +531,9 @@ static const mp_rom_map_elem_t uct_mouse_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_clear_display),MP_ROM_PTR(&mpy_uct_mouse_clear_display_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_maze_dimensions), MP_ROM_PTR(&mpy_uct_mouse_get_maze_dimensions_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_maze_size),       MP_ROM_PTR(&mpy_uct_mouse_get_maze_dimensions_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_version),         MP_ROM_PTR(&mpy_uct_mouse_get_version_obj) },
+    { MP_ROM_QSTR(MP_QSTR_version),             MP_ROM_PTR(&mpy_uct_mouse_get_version_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_firmware_id),     MP_ROM_PTR(&mpy_uct_mouse_get_firmware_id_obj) },
 };
 static MP_DEFINE_CONST_DICT(uct_mouse_module_globals, uct_mouse_module_globals_table);
 

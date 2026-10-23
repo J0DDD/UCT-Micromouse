@@ -158,6 +158,40 @@ The system is strictly divided into three distinct layers to preserve the kernel
   }
   ```
   `Signal = 150` (~1.17 MCPS in 9.7 fixpoint) cleanly rejects 100% of open-air ambient noise while preserving responsive, high-fidelity wall detection up to ~700–800 mm.
+* **CRITICAL: VL53L0X Big-Endian Register Byte Order (The 2-3 Hz Bottleneck Trap):**
+  * **The Trap:** The VL53L0X hardware register map is strictly **Big-Endian** (Network Byte Order: MSB in lower register address, LSB in upper address). The STM32L476 MCU is an ARM Cortex-M4 (**Little-Endian**).
+  * **Why `memcpy` Destroys ToF Ranging:** In earlier revisions, `readReg16Bit()`, `readReg32Bit()`, `writeReg16Bit()`, and `writeReg32Bit()` in `VL53L0X.c` were implemented using `memcpy(&value, msgBuffer, 2)` or `memcpy(msgBuffer, &value, 2)`. On little-endian ARM, `memcpy` silently swaps the high and low bytes.
+  * **The Cascade Failure:**
+    1. During `initVL53L0()`, `setMeasurementTimingBudget(33000)` calls `readReg16Bit(0x51)` and `readReg16Bit(0x71)` to read the existing pre-range and final-range timeouts. Because of `memcpy`, the values are read byte-swapped (e.g. `0x0096` becomes `0x9600`).
+    2. When calculating timeouts in `getSequenceStepTimeouts()`, `decodeTimeout(0x9600)` decodes an absurd value, causing `used_budget_us > budget_us` checks to fail or `writeReg16Bit(0x71, ...)` to write byte-swapped values into `FINAL_RANGE_CONFIG_TIMEOUT_MACROP_HI` (0x71).
+    3. Register 0x71 gets stuck at `0x0D02`, which encodes a hardware integration timeout of $(2 \times 2^{13}) + 1 = 16,385\text{ macro periods} \approx \mathbf{624.8\text{ ms}}$.
+    4. Consequently, the on-chip ST hardware only completes a measurement and asserts `RESULT_INTERRUPT_STATUS` once every $\sim 630\text{ ms}$, capping distance updates to **$\sim 1.5\text{--}3\text{ Hz}$** while all other telemetry (IMU, encoders, battery) updates at 50–100 Hz.
+  * **Mandatory Rule for Future Agents:** NEVER use `memcpy` for 16-bit or 32-bit register reads/writes in `VL53L0X.c`. Always use explicit bit-shifts:
+    ```c
+    void writeReg16Bit(uint8_t reg, uint16_t value) {
+        msgBuffer[0] = (uint8_t)((value >> 8) & 0xFF);
+        msgBuffer[1] = (uint8_t)(value & 0xFF);
+        HAL_I2C_Mem_Write(VL53L0X_I2C_Handler, g_i2cAddr | I2C_WRITE, reg, 1, msgBuffer, 2, I2C_TIMEOUT);
+    }
+    uint16_t readReg16Bit(uint8_t reg) {
+        HAL_I2C_Mem_Read(VL53L0X_I2C_Handler, g_i2cAddr | I2C_READ, reg, 1, msgBuffer, 2, I2C_TIMEOUT);
+        return (uint16_t)(((uint16_t)msgBuffer[0] << 8) | (uint16_t)msgBuffer[1]);
+    }
+    ```
+    Both `firmware/src/micropython/boards/UCT_MICROMOUSE/VL53L0X.c` and `external/MicroMouseTemplate/MicroMouseProgramming_Code/Core/Src/VL53L0X.c` must remain strictly synchronized.
+* **CRITICAL: MicroPython Background Tick Pumping During Sleep (`MICROPY_INTERNAL_EVENT_HOOK`):**
+  * **The Trap:** If `kernel_background_tick()` is only bound to `MICROPY_VM_HOOK_LOOP`, it is **only dispatched between Python bytecode instructions** inside `py/vm.c`.
+  * **The Failure Mode:** When Python executes `uct_mouse.delay_ms(250)` or `time.sleep_ms(250)` (such as in the default factory reset `main.py`), the CPU enters C `mp_hal_delay_ms()` and stops executing bytecodes. Background sensor polling (`refreshTOFValues`), OLED updates (`kernel_update_display`), and telemetry logging (`kernel_logger_tick`) freeze completely during the sleep window. This artificially caps sensor updates and OLED screen refresh to the sleep loop rate (e.g. 4 Hz for 250 ms delay).
+  * **Mandatory Rule:** In `firmware/src/micropython/boards/UCT_MICROMOUSE/mpconfigboard.h`, both hooks must always be defined:
+    ```c
+    #define MICROPY_VM_HOOK_LOOP        kernel_background_tick();
+    #define MICROPY_INTERNAL_EVENT_HOOK kernel_background_tick();
+    ```
+    This ensures that MicroPython's millisecond event wait loop (`mp_event_wait_ms(1)`) continuously pumps `kernel_background_tick()` at 100 Hz even while userland Python code is sleeping or waiting in REPL.
+* **VL53L0X Photon Integration Histogram & Visual OLED Refresh Rate (Apparent Filter Lag):**
+  * **Photon Integration (33 ms window):** The VL53L0X does not capture an instantaneous "snapshot". It accumulates photon arrival timestamps into a statistical histogram over its 33 ms timing window. If an obstacle enters the beam midway through that window, the sensor integrates returns from both the background and the obstacle, and the on-chip DSP reports the centroid of the two surfaces (e.g. 200 mm $\rightarrow$ 150 mm $\rightarrow$ 100 mm). This is an intrinsic physical property of the SPAD ASIC.
+  * **OLED Refresh Rate (10 Hz):** Visual display updates in `board_init.c` are rate-limited to 10 Hz (every 100 ms) to avoid saturating the shared I2C2 bus. When a 33 ms mid-frame transition value is sampled, it sits on the OLED screen for 100 ms before the settled value is drawn, creating the visual illusion of a software low-pass filter.
+  * **Do Not Add Software Filters:** There is no moving average or low-pass filter in firmware, and none should be added. Student code querying `uct_mouse.get_tof()` in Python reads the C-Kernel shadow buffer in $< 1\,\mu\text{s}$ at the true $\sim 30\text{--}40\text{ Hz}$ hardware rate.
 * **Full-Duplex Atomic Hardware SPI Transfers & Status Polling:** In `ZD25WQ80C.c`, all SPI commands, address phases, page programming, and status register polling use synchronous, atomic byte transfers (`spi_transfer_byte`) with timeout guards. `wait_for_ready()` properly inspects the physical Write-In-Progress (`WIP`) bit without RX FIFO dummy byte shifts, ensuring the MCU never begins subsequent transactions while a 4 KB sector erase (45–300 ms) is in progress.
 * **MicroPython BDEV Single-Block Boolean Return Contract:** In `ports/stm32/storage.c`, single-block macros (`MICROPY_HW_BDEV_READBLOCK` / `WRITEBLOCK`) expect a **boolean** (`true` for success). In `mpconfigboard.h`, these are explicitly mapped as `(uct_bdev_readblocks(dest, bl, 1) == 0)` so that standard POSIX 0 return values are not misinterpreted by FatFs as read errors.
 * **Gradescope Autograder HTML Visualizations (Inline SVG Map & Video Playback):** Gradescope does not provide an artifact download tab for arbitrary binary files (like `/autograder/results/run.mp4`) generated in the container. To provide visual feedback, `grade_runner.py` sets `"output_format": "html"` in `results.json` and embeds:

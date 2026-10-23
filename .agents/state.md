@@ -1,12 +1,17 @@
 # Session State Log - UCT Micromouse
 
-**Last Updated:** September 29, 2026  
+**Last Updated:** October 22, 2026  
 **Target Hardware:** STM32L476VE (UCT Micromouse Chassis)  
 **Active Submodule:** `external/MicroMouseTemplate`  
 
 ---
 
 ## 1. Summary of Completed Fixes
+
+### Firmware Versioning & Binary Watermark Identification
+* **Embedded ASCII Watermark:** Defined in [`firmware/src/kernel/inc/firmware_version.h`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/kernel/inc/firmware_version.h) and anchored in `.rodata` via [`micromouse_kernel.c`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/firmware/src/kernel/src/micromouse_kernel.c) (`UCT_MM_FW:<version>:<git_hash>:<build_date>`).
+* **Deployer Inventory & Auto-Sync:** Added `--info` CLI flag to [`tools/deploy.py`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/tools/deploy.py) to inspect compiled binaries without flashing, and automated git hash stamping during build.
+* **Runtime API Parity:** Exposed `uct_mouse.get_version()`, `uct_mouse.version()`, and `uct_mouse.get_firmware_id()` across MicroPython, PikaScript, and the desktop mock wrapper ([`python/uct_mouse.py`](file:///Users/nicolls/proj/eee3097s/2026/UCT-Micromouse/python/uct_mouse.py)), plus `"fw"` in telemetry log headers.
 
 ### TOF Sensor Open-Air Noise Rejection (Resolved)
 * **Signal Amplitude Filter (`Signal >= 150`):** In open air / empty space, ambient 940 nm photon shot noise occasionally triggered the VL53L0X ASIC histogram DSP, generating false short-range distance glitches (~30–80 mm) that prematurely tripped simple collision loops like `while TOF > 100:`.

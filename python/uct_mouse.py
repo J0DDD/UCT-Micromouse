@@ -461,3 +461,13 @@ def get_maze_dimensions():
 def get_maze_size():
     """Alias for get_maze_dimensions()."""
     return get_maze_dimensions()
+
+__version__ = "v2026.1.1"
+
+def get_version():
+    """Returns the version identifier string of the uct_mouse API/firmware."""
+    return f"UCT-Micromouse {__version__} (desktop-mock)"
+
+def version():
+    """Alias for get_version()."""
+    return get_version()

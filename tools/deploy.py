@@ -150,12 +150,141 @@ def trigger_software_dfu_reboot():
         pass
     return False
 
+def extract_firmware_watermark(bin_path):
+    """Scans a firmware .bin file for the embedded ASCII watermark.
+    Format: UCT_MM_FW:<version>:<git_hash>:<build_date>
+    """
+    if not bin_path or not os.path.isfile(bin_path):
+        return None
+    try:
+        with open(bin_path, "rb") as f:
+            data = f.read()
+        idx = data.find(b"UCT_MM_FW:")
+        if idx != -1:
+            end_idx = data.find(b"\x00", idx)
+            if end_idx == -1 or end_idx - idx > 128:
+                end_idx = idx + 128
+            raw_str = data[idx:end_idx].decode("ascii", errors="ignore").strip()
+            parts = raw_str.split(":")
+            if len(parts) >= 4:
+                return {
+                    "raw": raw_str,
+                    "version": parts[1],
+                    "git_hash": parts[2],
+                    "build_date": parts[3]
+                }
+    except Exception:
+        pass
+    return None
+
+def sync_firmware_version_header(repo_root):
+    """Synchronizes firmware/src/kernel/inc/firmware_version.h with current git status and build date."""
+    header_path = os.path.join(repo_root, "firmware", "src", "kernel", "inc", "firmware_version.h")
+    
+    # 1. Determine current git short hash
+    git_hash = "unknown"
+    try:
+        git_hash = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], 
+            cwd=repo_root, stderr=subprocess.DEVNULL
+        ).decode().strip()
+        # Check if working tree has modifications
+        diff_res = subprocess.run(
+            ["git", "diff", "--quiet"], 
+            cwd=repo_root, stderr=subprocess.DEVNULL
+        )
+        if diff_res.returncode != 0:
+            git_hash += "-dirty"
+    except Exception:
+        pass
+
+    # 2. Today's date
+    build_date = time.strftime("%Y-%m-%d")
+    
+    # 3. Read existing version number if present (preserve semantic version string)
+    ver_major = 2026
+    ver_minor = 1
+    ver_patch = 1
+    ver_str = f"v{ver_major}.{ver_minor}.{ver_patch}"
+    if os.path.exists(header_path):
+        try:
+            with open(header_path, "r") as f:
+                content = f.read()
+            import re
+            m = re.search(r'#define\s+UCT_FW_VERSION_STR\s+"([^"]+)"', content)
+            if m:
+                ver_str = m.group(1)
+        except Exception:
+            pass
+            
+    expected_content = (
+        f"#ifndef FIRMWARE_VERSION_H\n"
+        f"#define FIRMWARE_VERSION_H\n\n"
+        f"// =========================================================================\n"
+        f"// UCT Micromouse - Firmware Version & Binary Identification\n"
+        f"// =========================================================================\n\n"
+        f"#ifndef UCT_FW_VERSION_MAJOR\n#define UCT_FW_VERSION_MAJOR {ver_major}\n#endif\n\n"
+        f"#ifndef UCT_FW_VERSION_MINOR\n#define UCT_FW_VERSION_MINOR {ver_minor}\n#endif\n\n"
+        f"#ifndef UCT_FW_VERSION_PATCH\n#define UCT_FW_VERSION_PATCH {ver_patch}\n#endif\n\n"
+        f"#ifndef UCT_FW_VERSION_STR\n#define UCT_FW_VERSION_STR \"{ver_str}\"\n#endif\n\n"
+        f"#ifndef UCT_FW_GIT_HASH\n#define UCT_FW_GIT_HASH \"{git_hash}\"\n#endif\n\n"
+        f"#ifndef UCT_FW_BUILD_DATE\n#define UCT_FW_BUILD_DATE \"{build_date}\"\n#endif\n\n"
+        f"// Machine-scannable ASCII watermark embedded directly into flash .rodata\n"
+        f"// Format: UCT_MM_FW:<version>:<git_hash>:<build_date>\n"
+        f"#define UCT_FW_WATERMARK \"UCT_MM_FW:\" UCT_FW_VERSION_STR \":\" UCT_FW_GIT_HASH \":\" UCT_FW_BUILD_DATE\n\n"
+        f"// Human-readable firmware label\n"
+        f"#define UCT_FW_LABEL \"UCT-Micromouse \" UCT_FW_VERSION_STR \" (\" UCT_FW_GIT_HASH \") \" UCT_FW_BUILD_DATE\n\n"
+        f"#endif // FIRMWARE_VERSION_H\n"
+    )
+
+    if os.path.exists(header_path):
+        with open(header_path, "r") as f:
+            if f.read() == expected_content:
+                return ver_str, git_hash, build_date
+
+    os.makedirs(os.path.dirname(header_path), exist_ok=True)
+    with open(header_path, "w") as f:
+        f.write(expected_content)
+    return ver_str, git_hash, build_date
+
+def print_firmware_info(repo_root):
+    """Scans and displays version identifiers and checksums for all firmware binaries in the repository."""
+    import hashlib
+    print("\n=== UCT Micromouse Firmware Binary Inventory ===")
+    targets = [
+        ("Release: MicroPython", os.path.join(repo_root, "firmware", "binaries", "micropython.bin")),
+        ("Release: PikaScript",  os.path.join(repo_root, "firmware", "binaries", "pikascript.bin")),
+        ("Release: Simulink",    os.path.join(repo_root, "firmware", "binaries", "simulink.bin")),
+        ("Local Build: MicroPython", os.path.join(repo_root, "build", "bin", "micropython.bin")),
+        ("Local Build: PikaScript",  os.path.join(repo_root, "build", "bin", "pikascript.bin")),
+        ("Local Build: Simulink",    os.path.join(repo_root, "build", "bin", "simulink.bin")),
+    ]
+    for label, path in targets:
+        if os.path.exists(path):
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                md5 = hashlib.md5(f.read()).hexdigest()
+            info = extract_firmware_watermark(path)
+            id_str = f"{info['version']} ({info['git_hash']}) built {info['build_date']}" if info else "Legacy (no watermark)"
+            print(f"  * {label}:")
+            print(f"      Path:       {os.path.relpath(path, repo_root)}")
+            print(f"      Identifier: {id_str}")
+            print(f"      Size:       {size:,} bytes")
+            print(f"      MD5:        {md5}")
+        else:
+            print(f"  * {label}: [Not Found]")
+    print("================================================\n")
+
 def flash_firmware(central_bin_path, erase_all=False):
     """Flashes the firmware binary onto the board.
     Tries USB DFU via dfu-util over USB OTG first (without needing ST-Link),
     then falls back to SWD via st-flash, STM32_Programmer_CLI, and ST-Link USB mass storage copy.
     If erase_all is True, performs a complete chip/mass erase before flashing to guarantee a clean slate.
     """
+    fw_info = extract_firmware_watermark(central_bin_path)
+    if fw_info:
+        print(f"    -> Firmware Identifier: {fw_info['version']} ({fw_info['git_hash']}) built {fw_info['build_date']}")
+
     dfu_util_cmd = find_dfu_util_cmd()
     if dfu_util_cmd:
         if not is_dfu_device_connected(dfu_util_cmd):
@@ -334,15 +463,21 @@ def get_cmake_toolchain_flags(required=True):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UCT Micromouse Firmware and Script Deployer")
     parser.add_argument(
-        "--engine", "-e",
+        "--engine", "--method", "-e", "-m",
         choices=["pikascript", "micropython", "simulink"],
         default="pikascript",
+        dest="engine",
         help="Select the firmware engine to deploy (default: pikascript)"
     )
     parser.add_argument(
         "--flash", "-f",
         action="store_true",
         help="Flash the engine's compiled C firmware binary onto the board using the ST-Link drive (always happens for pikascript and simulink)."
+    )
+    parser.add_argument(
+        "--compile", "--build", "-c",
+        action="store_true",
+        help="Compile the firmware from C source code (requires arm-none-eabi-gcc). By default, deploy.py flashes the verified precompiled release binary."
     )
     parser.add_argument(
         "--script-only", "-o",
@@ -369,19 +504,45 @@ if __name__ == "__main__":
         action="store_true",
         help="Perform a true hardware factory reset: completely erase the microcontroller flash (all firmware, filesystem, and telemetry partitions) and reflash pristine base firmware from scratch using ST-Link or USB DFU."
     )
+    parser.add_argument(
+        "--info",
+        action="store_true",
+        help="Inspect and display version identifiers and build watermarks for all compiled firmware binaries."
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Optional path to a specific Python script or directory to deploy."
+    )
     args = parser.parse_args()
 
-    print("=== UCT Micromouse Firmware Deployer ===")
-    print(f"Selected engine: {args.engine.upper()}")
-    
+    # Automatically map positional target to script or src-dir
+    if args.target:
+        if os.path.isfile(args.target):
+            args.script = args.target
+            if args.engine == "pikascript" and args.target.endswith(".py"):
+                if find_micropython_drive():
+                    args.engine = "micropython"
+        elif os.path.isdir(args.target):
+            args.src_dir = args.target
+
     # Dynamically resolve paths so the script can be run from anywhere
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.abspath(os.path.join(script_dir, ".."))
 
+    if args.info:
+        print_firmware_info(repo_root)
+        sys.exit(0)
+
+    print("=== UCT Micromouse Firmware Deployer ===")
+    print(f"Selected engine: {args.engine.upper()}")
+
     # Define files/folders to ignore during deployment
     ignore_names = {
         "deploy", "ekf_research", "attic", "build", "matlab", "external", 
-        "tools", ".git", "__pycache__", "sub1_marking", "sub2_marking", 
+        "tools", ".git", "__pycache__", "sub1_marking", "sub2_marking", "sub3_marking", "sub4_marking",
+        "live_audit", "benchmark_submission4",
         "ga1_marking", "ga3_marking", "marking", "extracted_pages", "extracted_text",
         "raw_submissions", "tmp", "venv", ".venv", "env", ".vscode", ".idea"
     }
@@ -486,6 +647,7 @@ if __name__ == "__main__":
             f_h.write(";\n#endif\n")
             
         try:
+            sync_firmware_version_header(repo_root)
             print("    -> Configuring CMake...")
             toolchain_flags = get_cmake_toolchain_flags()
             subprocess.run(["cmake", "-S", "firmware", "-B", "firmware/build"] + toolchain_flags, cwd=repo_root, check=True)
@@ -552,6 +714,7 @@ if __name__ == "__main__":
         
         if selected_ert_dir and toolchain_flags is not None:
             try:
+                sync_firmware_version_header(repo_root)
                 print("    -> Configuring CMake for Simulink model...")
                 ert_arg = f"-DSIMULINK_ERT_DIR={selected_ert_dir.replace(os.sep, '/')}"
                 subprocess.run(
@@ -614,46 +777,54 @@ if __name__ == "__main__":
             untracked_bin_path = os.path.join(repo_root, "build", "bin", "micropython.bin")
             tracked_bin_path = os.path.join(repo_root, "firmware", "binaries", "micropython.bin")
             
-            # Try compiling the firmware
-            print("    -> Compiling MicroPython firmware...")
-            mpy_ports_dir = os.path.join(repo_root, "external", "micropython", "ports", "stm32")
-            symlink_path = os.path.join(mpy_ports_dir, "boards", "UCT_MICROMOUSE")
-            
-            created_symlink = False
-            build_success = False
-            try:
-                if not os.path.exists(symlink_path):
-                    # Create symlink: boards/UCT_MICROMOUSE -> ../../../../../firmware/src/micropython/boards/UCT_MICROMOUSE
-                    target_rel_path = os.path.join("..", "..", "..", "..", "..", "firmware", "src", "micropython", "boards", "UCT_MICROMOUSE")
-                    os.symlink(target_rel_path, symlink_path)
-                    created_symlink = True
+            should_compile = getattr(args, 'compile', False)
+            if not os.path.exists(tracked_bin_path) and not os.path.exists(untracked_bin_path):
+                should_compile = True
+
+            active_bin_path = None
+            if should_compile:
+                # Try compiling the firmware from source
+                sync_firmware_version_header(repo_root)
+                print("    -> Compiling MicroPython firmware from source...")
+                mpy_ports_dir = os.path.join(repo_root, "external", "micropython", "ports", "stm32")
+                symlink_path = os.path.join(mpy_ports_dir, "boards", "UCT_MICROMOUSE")
                 
-                subprocess.run(["make", "BOARD=UCT_MICROMOUSE"], cwd=mpy_ports_dir, check=True)
-                build_success = True
-            except Exception as e:
-                print(f"Compilation failed: {e}")
-                print("Checking for existing precompiled binaries...")
-            finally:
-                if created_symlink and os.path.exists(symlink_path):
-                    try:
-                        os.remove(symlink_path)
-                    except Exception:
-                        pass
-                        
-            if build_success and os.path.exists(mpy_bin_path):
-                os.makedirs(os.path.dirname(untracked_bin_path), exist_ok=True)
-                shutil.copy(mpy_bin_path, untracked_bin_path)
-                shutil.copy(mpy_bin_path, tracked_bin_path)
-                print(f"    -> Copied compiled firmware to {untracked_bin_path} and {tracked_bin_path}")
-                active_bin_path = untracked_bin_path
-            else:
-                # Fallback checks
-                if os.path.exists(untracked_bin_path):
-                    print(f"Using locally cached build: {untracked_bin_path}")
+                created_symlink = False
+                build_success = False
+                try:
+                    if not os.path.exists(symlink_path):
+                        # Create symlink: boards/UCT_MICROMOUSE -> ../../../../../firmware/src/micropython/boards/UCT_MICROMOUSE
+                        target_rel_path = os.path.join("..", "..", "..", "..", "..", "firmware", "src", "micropython", "boards", "UCT_MICROMOUSE")
+                        os.symlink(target_rel_path, symlink_path)
+                        created_symlink = True
+                    
+                    subprocess.run(["make", "BOARD=UCT_MICROMOUSE"], cwd=mpy_ports_dir, check=True)
+                    build_success = True
+                except Exception as e:
+                    print(f"Compilation failed: {e}")
+                finally:
+                    if created_symlink and os.path.exists(symlink_path):
+                        try:
+                            os.remove(symlink_path)
+                        except Exception:
+                            pass
+                            
+                if build_success and os.path.exists(mpy_bin_path):
+                    os.makedirs(os.path.dirname(untracked_bin_path), exist_ok=True)
+                    shutil.copy(mpy_bin_path, untracked_bin_path)
+                    shutil.copy(mpy_bin_path, tracked_bin_path)
+                    print(f"    -> Copied compiled firmware to {untracked_bin_path} and {tracked_bin_path}")
                     active_bin_path = untracked_bin_path
-                elif os.path.exists(tracked_bin_path):
-                    print(f"Using precompiled release binary: {tracked_bin_path}")
+                else:
+                    print("Falling back to existing precompiled binaries...")
+
+            if not active_bin_path:
+                if os.path.exists(tracked_bin_path):
+                    print(f"    -> Using precompiled release binary: {tracked_bin_path}")
                     active_bin_path = tracked_bin_path
+                elif os.path.exists(untracked_bin_path):
+                    print(f"    -> Using locally cached build: {untracked_bin_path}")
+                    active_bin_path = untracked_bin_path
                 else:
                     print("Error: No MicroPython binary found to flash!")
                     sys.exit(1)
