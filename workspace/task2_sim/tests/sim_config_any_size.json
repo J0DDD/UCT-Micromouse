@@ -1,0 +1,53 @@
+{
+  "robot": {
+    "mass": 0.238,
+    "axle_half_length": 0.054,
+    "wheel_radius": 0.017,
+    "collision_radius": 0.07,
+    "ticks_per_rot": 470.0,
+    "total_width": 0.122
+  },
+  "motor": {
+    "max_speed": 0.4,
+    "tau": 0.045,
+    "imbalance": 0.08,
+    "slip": 0.08,
+    "dead_band_l": 28.0,
+    "dead_band_r": 28.0,
+    "perturb_dead_band_std": 2.0,
+    "perturb_imbalance_std": 0.02,
+    "perturb_slip_std": 0.015
+  },
+  "tof_sensors": [
+    {
+      "name": "tof_l",
+      "offset_x": 0.05,
+      "offset_y": 0.04,
+      "yaw": 1.5708,
+      "max_range": 2.0,
+      "fov_deg": 25.0
+    },
+    {
+      "name": "tof_c",
+      "offset_x": 0.065,
+      "offset_y": 0.0,
+      "yaw": 0.0,
+      "max_range": 2.0,
+      "fov_deg": 25.0
+    },
+    {
+      "name": "tof_r",
+      "offset_x": 0.05,
+      "offset_y": -0.04,
+      "yaw": -1.5708,
+      "max_range": 2.0,
+      "fov_deg": 25.0
+    }
+  ],
+  "imu": {
+    "gyro_bias_std": 0.15,
+    "gyro_noise_std": 0.5,
+    "accel_bias_std": 1.35,
+    "accel_noise_std": 0.2
+  }
+}
