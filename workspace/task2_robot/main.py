@@ -15,70 +15,39 @@
 #          maze.py (map, room detection, planning).
 # =========================================================================
 
-import gc
-import json
-import sys
 import uct_mouse
 from config import *
 import maze as mz
 from motion import Robot, cell_centre, setup_polarity, DIR_UX, DIR_UY
-import celebrate
+
+
+_log_mode = [VERBOSE]      # True: print now / "after": keep for later / False: off
+_log_lines = []
 
 
 def log(msg):
-    if VERBOSE:
+    """Progress messages. Printing costs ~10 ms per line (the board also
+    sends everything to its serial port at 115200 baud and waits for it),
+    which upsets the control loop when it happens on the move - so they can
+    be held back and printed after the run (VERBOSE = "after") or dropped."""
+    mode = _log_mode[0]
+    if mode == "after":
+        if len(_log_lines) >= LOG_KEEP:
+            _log_lines.pop(0)
+        _log_lines.append(msg)
+    elif mode:
         print(msg)
 
 
-# Run notes go into the course's own run log on the robot (the one
-# tools/dump_logs.py reads and the submission package needs). The kernel
-# already records PWM, ToF, encoders, gyro and battery voltage there; these
-# notes add what the code was doing, as lines like {"note": "...", "t": 12.3}.
-# Read it back after a run (before the next one - a new run starts a new log):
-#     python tools/dump_logs.py --port COM10 -o run_log.jsonl
-# If the notes end at a normal phase with nothing after it, the robot reset
-# or lost power (check the "v" battery readings) rather than failing in code.
-_t0 = [0]
-
-
-def free_mem():
-    try:
-        return gc.mem_free()
-    except AttributeError:          # not available in the simulator
-        return -1
-
-
-def note(msg):
-    """Print msg and add it to the kernel run log."""
-    log(msg)
-    if not RUN_NOTES:
-        return
-    try:
-        t = (uct_mouse.get_ticks_ms() - _t0[0]) / 1000.0
-        uct_mouse.log_custom(json.dumps({"note": msg, "t": round(t, 1)}))
-    except Exception:
-        pass
-
-
-def note_exception(e):
-    """Record an error with its traceback, and show it on the OLED."""
-    name = type(e).__name__
-    uct_mouse.display_text(1, "ERROR")
-    uct_mouse.display_text(2, name[:18])
-    uct_mouse.display_text(3, str(e)[:18])
-    uct_mouse.display_text(4, "dump the run log")
-    trace = ""
-    try:
-        import io
-        buf = io.StringIO()
-        sys.print_exception(e, buf)     # MicroPython
-        trace = buf.getvalue()
-    except Exception:
-        pass
-    note("ERROR %s: %s (free mem %d)\n%s" % (name, e, free_mem(), trace))
+def flush_log():
+    """Print the messages held back by VERBOSE = "after"."""
+    while _log_lines:
+        print(_log_lines.pop(0))
 
 
 def maze_dimensions():
+    if MAZE_SIZE is not None:
+        return MAZE_SIZE[0], MAZE_SIZE[1]   # set by hand in config.py
     try:
         dims = uct_mouse.get_maze_dimensions()
         rows = int(dims[0])
@@ -97,7 +66,6 @@ class MazeSolver:
         self.x = 0
         self.y = 0
         self.dir = mz.EAST
-        self.stops = 0
 
     # ------------------------------------------------------------------
     # Perception
@@ -135,10 +103,7 @@ class MazeSolver:
         """Classify walls around the current cell (mouse stopped at centre),
         then re-localise against the updated map."""
         r = self.robot
-        r.sample_still(5)
-        gc.collect()                # tidy the heap while standing still anyway
-        self.stops += 1
-        uct_mouse.display_text(4, "mem %dk stop %d" % (free_mem() // 1024, self.stops))
+        r.sample_still(OBSERVE_SAMPLES, True)
         log("stop (%d,%d) d%d: L=%.3f C=%.3f R=%.3f | est pos (%.3f, %.3f) heading %.0f | wall fix %+.1f deg" % (
             self.x, self.y, self.dir, r.tof_l, r.tof_c, r.tof_r, r.px, r.py,
             (r.heading * 57.29578) % 360.0, r.last_slope_fix))
@@ -211,9 +176,48 @@ class MazeSolver:
             d = self.map.next_direction(self.x, self.y, self.dir, goal_fn(), True)
             if d is None:
                 return False
+            if d == (self.dir + 2) % 4:
+                k = self.reverse_run(d, goal_fn())
+                if k:
+                    self.back_out(d, k)
+                    moves += 1
+                    continue
             self.drive_exploring(d, goal_fn, done_fn)
             moves += 1
         return False
+
+    def reverse_run(self, d, goals):
+        """Turning round (d is straight behind): how many cells to back up
+        instead, or 0 to turn round as usual. Backing up only pays when the
+        route turns off within REVERSE_MAX_CELLS cells of already-visited,
+        known-open cells (nothing new to map on the way, and the turn there
+        replaces the 180)."""
+        m = self.map
+        cx = self.x
+        cy = self.y
+        for k in range(1, REVERSE_MAX_CELLS + 1):
+            if m.get(cx, cy, d) != mz.OPEN:
+                return 0
+            cx += mz.DX[d]
+            cy += mz.DY[d]
+            if not m.is_visited(cx, cy):
+                return 0
+            nd = m.next_direction(cx, cy, d, goals, True)
+            if nd is None or nd == (d + 2) % 4:
+                return 0
+            if nd != d:
+                return k                    # the route turns off here
+        return 0                            # it carries on further: turn round instead
+
+    def back_out(self, d, k):
+        """Reverse k cells along maze direction d while still facing the way
+        the mouse came (self.dir)."""
+        r = self.robot
+        log("(%d,%d) back out x%d" % (self.x, self.y, k))
+        wall = self.wall_along(self.x, self.y, self.dir)
+        self.x += mz.DX[d] * k
+        self.y += mz.DY[d] * k
+        r.reverse(self.dir, k * CELL_M, wall)
 
     def drive_exploring(self, d, goal_fn, done_fn):
         """Drive in direction d through as many cells as floodfill keeps going
@@ -232,8 +236,9 @@ class MazeSolver:
         self.dir = d
         ux = DIR_UX[d]
         uy = DIR_UY[d]
-        st = [self.x + mz.DX[d], self.y + mz.DY[d], 0, 0, 0, 0.0, False]
-        # st = [cell x, cell y, samples, left votes, right votes, front sum, decided]
+        st = [self.x + mz.DX[d], self.y + mz.DY[d], 0, 0, 0, 0.0, False, 9.0, 0.0]
+        # st = [cell x, cell y, samples, left votes, right votes, front sum, decided,
+        #       lowest front, highest front]
 
         def on_tick():
             cx, cy = cell_centre(st[0], st[1])
@@ -244,20 +249,32 @@ class MazeSolver:
                     st[3] += 1
                 if r.right_wall():
                     st[4] += 1
-                st[5] += r.tof_c + rel                       # reading as seen from the centre
+                f = r.tof_c + rel                            # reading as seen from the centre
+                st[5] += f
+                st[7] = min(st[7], f)
+                st[8] = max(st[8], f)
             if st[6] or rel < -DECIDE_BEFORE_CENTRE:
                 return None
             st[6] = True
             self.x = st[0]
             self.y = st[1]
-            # on the robot the wide ToF beams misread openings while moving,
-            # so an unvisited cell is left unmapped here and the drive stops
-            # in it to look while stationary
-            if MAP_ON_THE_MOVE and not m.is_visited(self.x, self.y) and st[2] >= 3:
-                n = st[2]
+            n = st[2]
+            # Map the cell without stopping only when the readings taken
+            # while passing through it all agreed (every one saw the same
+            # walls, and the front stayed steady); anything doubtful -> the
+            # drive stops in the cell and looks while stationary as before.
+            sure = (n >= MOVE_MAP_MIN_SAMPLES and st[3] in (0, n) and st[4] in (0, n)
+                    and st[8] - st[7] < MOVE_MAP_FRONT_SPREAD)
+            if MAP_ON_THE_MOVE and not m.is_visited(self.x, self.y) and sure:
                 log("  moving (%d,%d) d%d: L wall %d/%d  R wall %d/%d  front %.3f" % (
                     self.x, self.y, d, st[3], n, st[4], n, st[5] / n))
                 self.record(st[3] * 2 > n, st[4] * 2 > n, st[5] / n)
+            if m.n > PLAN_COAST_CELLS:
+                # Planning on a big maze takes long enough (>0.1 s on the
+                # robot) that the mouse would drive on blind meanwhile - it
+                # went straight into a wall on a 9x9. Let it coast instead;
+                # the drive picks the speed back up afterwards.
+                uct_mouse.set_motors(0, 0)
             m.find_room()
             if done_fn():
                 return None
@@ -271,6 +288,8 @@ class MazeSolver:
             st[4] = 0
             st[5] = 0.0
             st[6] = False
+            st[7] = 9.0
+            st[8] = 0.0
             nx, ny = cell_centre(st[0], st[1])
             return (nx, ny, self.wall_along(self.x, self.y, d))
 
@@ -280,7 +299,7 @@ class MazeSolver:
         self.x = st[0]
         self.y = st[1]
 
-    def follow_path(self, headings, speeds, accel, decel, curves=False):
+    def follow_path(self, headings, speeds, accel, decel, curves=False, first_arc_cells=1):
         """Drive a known path: each straight is one merged speed profile that
         stops at the centre of the corner cell, then the mouse turns on the
         spot to the next heading. (No curved corners on the robot.)
@@ -295,7 +314,7 @@ class MazeSolver:
             return
         log("path %s" % (segs,))
         if curves:
-            self._follow_curved(segs, speeds, accel, decel)
+            self._follow_curved(segs, speeds, accel, decel, first_arc_cells)
             return
         for i in range(len(segs)):
             h = segs[i][0]
@@ -320,7 +339,7 @@ class MazeSolver:
                 log("  wall stop at (%d,%d): %+.0f mm (- = too close), stop bias now %+.0f mm" % (
                     self.x, self.y, r.last_stop_err * 1000.0, r.stop_bias * 1000.0))
 
-    def _follow_curved(self, segs, speeds, accel, decel):
+    def _follow_curved(self, segs, speeds, accel, decel, first_arc_cells=1):
         """follow_path with smooth corners: each straight ends at the entry
         boundary of the corner cell at ARC_SPEED, then a quarter circle
         through that cell leads into the next straight."""
@@ -333,6 +352,8 @@ class MazeSolver:
         r.sample_still(3)
         self.localise()
         half = CELL_M / 2.0
+        from_stop = True            # this straight starts from rest (start or a pivot)
+        chained = 0                 # curves in a row with no straight between them
         for i in range(len(segs)):
             h = segs[i][0]
             n = segs[i][1]
@@ -345,13 +366,78 @@ class MazeSolver:
             if i == len(segs) - 1:
                 r.drive_to(cx, cy, h, v_max, 0.0, 0.0, accel, decel, wall)
                 break
+            nh = segs[i + 1][0]
+            # An arc follows a circle in the mouse's position estimate, so it
+            # needs that estimate to be good. Pivot instead when:
+            #  - the straight before it starts from rest and is short: after
+            #    the pirouette, or a pivot (which shifts the mouse slightly),
+            #    too few walls are passed to correct the position before the
+            #    curve begins (first corner: first_arc_cells, later ones:
+            #    ARC_AFTER_STOP_CELLS)
+            #  - it would be the ARC_MAX_CHAINED + 1-th curve in a row with no
+            #    straight in between (S-bends, zig-zags): no walls at all are
+            #    passed, so each curve inherits the last one's error
+            #  - right turns with ARC_RIGHT_TURNS off (stiff right motor)
+            #  - ARC_MAX_UNFIXED curves have been driven since the walls last
+            #    pinned the position (many corners close together): stopping
+            #    at the wall ahead gives an exact fix before carrying on
+            short_start = from_stop and n < (first_arc_cells if i == 0 else ARC_AFTER_STOP_CELLS)
+            if short_start and i > 0 and r.pos_unc < ARC_AFTER_STOP_UNC:
+                # the pivot was made against walls that pinned the position
+                # (stop at a wall ahead + re-measure): a short run-up is fine
+                short_start = False
+            if i > 0 and n == 1 and not from_stop:
+                chained += 1        # this curve starts where the last one ended
+            else:
+                chained = 0
+            lost = r.arcs_since_fix >= ARC_MAX_UNFIXED or chained >= ARC_MAX_CHAINED
+            log("  corner (%d,%d): %s  [pos unc %.0f mm, curves since fix %d, in a row %d, run-up %d%s]" % (
+                self.x, self.y,
+                "PIVOT" if (short_start or lost or (not ARC_RIGHT_TURNS and (nh - h) % 4 == 1)) else "curve",
+                r.pos_unc * 1000.0, r.arcs_since_fix, chained + 1, n, " from stop" if from_stop else ""))
+            if short_start or lost or (not ARC_RIGHT_TURNS and (nh - h) % 4 == 1):
+                r.drive_to(cx, cy, h, v_max, 0.0, 0.0, accel, decel, wall)
+                if r.square_up() is not None:
+                    self.localise()
+                r.face(nh)
+                self.dir = nh
+                # the pivot can shift the mouse a little: re-measure against
+                # the walls before driving on (only walls close by can undo
+                # that, so without them the position stays uncertain)
+                r.pos_unc = min(POS_UNC_MAX, r.pos_unc + PIVOT_POS_UNC)
+                r.sample_still(3)
+                self.localise()
+                from_stop = True
+                chained = 0
+                continue
             # straight up to the entry boundary of the turn cell (zero length
             # when two corners follow each other), then the arc
-            ex = cx - half * DIR_UX[h]
-            ey = cy - half * DIR_UY[h]
+            # (starting ARC_LAG_S early: the wheels answer the turn that late)
+            lead = ARC_SPEED * ARC_LAG_S
+            ex = cx - (half + lead) * DIR_UX[h]
+            ey = cy - (half + lead) * DIR_UY[h]
             if (ex - r.px) * DIR_UX[h] + (ey - r.py) * DIR_UY[h] > 0.005:
-                r.drive_to(ex, ey, h, v_max, ARC_SPEED, half, accel, decel, wall)
-            r.arc(cx, cy, h, segs[i + 1][0], ARC_SPEED)
+                r.drive_to(ex, ey, h, v_max, ARC_SPEED, half + lead, accel, decel, wall)
+                if r.pos_unc > ARC_ENTRY_MAX_UNC:
+                    # Arrived at the corner unsure how far along it is (no
+                    # wall ahead to measure against on the way in): a curve
+                    # started early cuts the inner post, so carry on to the
+                    # centre, stop and pivot instead.
+                    log("  corner (%d,%d): unsure at the entry (%.0f mm) - pivot" % (
+                        self.x, self.y, r.pos_unc * 1000.0))
+                    r.drive_to(cx, cy, h, ARC_SPEED, 0.0, 0.0, accel, decel, wall)
+                    if r.square_up() is not None:
+                        self.localise()
+                    r.face(nh)
+                    self.dir = nh
+                    r.pos_unc = min(POS_UNC_MAX, r.pos_unc + PIVOT_POS_UNC)
+                    r.sample_still(3)
+                    self.localise()
+                    from_stop = True
+                    chained = 0
+                    continue
+            r.arc(cx, cy, h, segs[i + 1][0], ARC_SPEED, lead)
+            from_stop = False
 
     # ------------------------------------------------------------------
     # Mission phases
@@ -360,6 +446,18 @@ class MazeSolver:
         m = self.map
         return self.navigate(m.exploration_goals,
                              lambda: m.room is not None and m.in_room(self.x, self.y))
+
+    def first_return_dir(self):
+        """The direction return_to_start() will set off in."""
+        m = self.map
+        home = [(0, 0)]
+        if self.x == 0 and self.y == 0:
+            return None
+        here = m.index(self.x, self.y)
+        if m.floodfill(home, False)[here] == m.floodfill(home, True)[here]:
+            path = m.fastest_path((self.x, self.y), self.dir, home, TURN_COST_CELLS)
+            return path[0] if path else None
+        return m.next_direction(self.x, self.y, self.dir, home, True)
 
     def return_to_start(self):
         """Head home. While a route through unexplored cells could still be
@@ -376,7 +474,8 @@ class MazeSolver:
             if known == best:
                 path = m.fastest_path((self.x, self.y), self.dir, home, TURN_COST_CELLS)
                 if path:
-                    self.follow_path(path, RETURN_SPEEDS, ACCEL, DECEL, RETURN_CURVES)
+                    self.follow_path(path, RETURN_SPEEDS, ACCEL, DECEL, RETURN_CURVES,
+                                     RETURN_ARC_FIRST_CELLS)
                 break
             d = m.next_direction(self.x, self.y, self.dir, home, True)
             if d is None:
@@ -400,11 +499,9 @@ class MazeSolver:
 def run_mission(rows, cols):
     """One complete four-phase run from the start cell."""
     t_start = uct_mouse.get_ticks_ms()
-    _t0[0] = t_start
     robot = Robot()
     robot.calibrate_gyro()
-    cal = robot.calibrate_in_start_cell()
-    note("run start: battery %.2f V, free mem %d, %s" % (uct_mouse.get_vbatt(), free_mem(), cal))
+    log(robot.calibrate_in_start_cell())
     # visible without the cable: front stop / side reference in mm
     uct_mouse.display_text(2, "F%d L%d R%d" % (int(robot.front_stop * 1000),
                                                int(robot.side_ref_l * 1000), int(robot.side_ref_r * 1000)))
@@ -413,39 +510,45 @@ def run_mission(rows, cols):
 
     # Phase 1: explore until inside the identified target room
     uct_mouse.display_text(1, "EXPLORE")
-    note("explore")
+    t_explore = uct_mouse.get_ticks_ms()
     if not solver.explore():
+        flush_log()
+        print("Exploration failed at (%d,%d) facing %d; its map:" % (solver.x, solver.y, solver.dir))
+        print(solver.map.ascii(solver.x, solver.y))
         robot.stop()
-        uct_mouse.display_text(1, "NO PATH (%d,%d)" % (solver.x, solver.y))
-        uct_mouse.display_text(2, "after %d stops" % solver.stops)
-        uct_mouse.display_text(3, "dump the run log")
-        note("EXPLORE FAILED at (%d,%d) facing %d after %d stops, battery %.2f V - "
-             "no route left to an unexplored room candidate in this map:" % (
-                 solver.x, solver.y, solver.dir, solver.stops, uct_mouse.get_vbatt()))
-        note("\n" + solver.map.ascii(solver.x, solver.y))
         return
+
+    explore_s = (uct_mouse.get_ticks_ms() - t_explore) / 1000.0
 
     # Phase 2: recognition pirouette
     uct_mouse.display_text(1, "PIROUETTE")
-    note("room found at (%d,%d) after %d stops, battery %.2f V" % (
-        solver.x, solver.y, solver.stops, uct_mouse.get_vbatt()))
-    robot.pirouette()
+    # If the way out is clockwise from here anyway (right, or behind), add
+    # that turn to the spin: one motion instead of spin, stop, turn. (A left
+    # turn stays separate - adding 270 degrees clockwise would take longer.)
+    out = solver.first_return_dir()
+    extra = 0
+    if PIROUETTE_MERGE and out is not None and (out - solver.dir) % 4 in (1, 2):
+        extra = (out - solver.dir) % 4
+    robot.pirouette(extra)
+    solver.dir = (solver.dir + extra) % 4
+    # a long spin on the spot shifts the mouse a little; the room's own walls
+    # (if close enough) take that back out
+    robot.pos_unc = min(POS_UNC_MAX, robot.pos_unc + PIROUETTE_POS_UNC)
     robot.sample_still(5)
     solver.localise()
 
     # Phase 3: back to the start cell, facing East
     uct_mouse.display_text(1, "RETURN")
-    note("return")
+    t_return = uct_mouse.get_ticks_ms()
     if not solver.return_to_start():
+        flush_log()
+        print("Return failed")
         robot.stop()
-        uct_mouse.display_text(1, "RETURN FAILED")
-        note("RETURN FAILED at (%d,%d), map:" % (solver.x, solver.y))
-        note("\n" + solver.map.ascii(solver.x, solver.y))
         return
+    return_s = (uct_mouse.get_ticks_ms() - t_return) / 1000.0
 
     # Phase 4: pause (re-estimating gyro bias meanwhile), then sprint
     uct_mouse.display_text(1, "SPRINT")
-    note("sprint, battery %.2f V" % uct_mouse.get_vbatt())
     robot.calibrate_gyro(int((SPRINT_PAUSE_MS - 200) / LOOP_MS))
     t_sprint = uct_mouse.get_ticks_ms()
     ok = solver.sprint()
@@ -453,10 +556,21 @@ def run_mission(rows, cols):
     t_end = uct_mouse.get_ticks_ms()
     sprint_s = (t_end - t_sprint) / 1000.0
     total_s = (t_end - t_start) / 1000.0
-    note("finished: sprint %.1f s, whole run %.1f s, ok %s, battery %.2f V" % (
-        sprint_s, total_s, ok, uct_mouse.get_vbatt()))
+    log("explore %.1f s, return %.1f s, sprint %.1f s, whole run %.1f s" % (
+        explore_s, return_s, sprint_s, total_s))
+    flush_log()
     if ok and CELEBRATE:
-        celebrate.party(robot, sprint_s, total_s)
+        # loaded only now: the animation takes RAM the run itself needed
+        try:
+            import gc
+            gc.collect()
+            import celebrate
+            celebrate.party(robot, {"total": total_s, "explore": explore_s,
+                                    "return": return_s, "sprint": sprint_s})
+        except MemoryError:
+            robot.stop()
+            uct_mouse.display_text(1, "DONE (no RAM left")
+            uct_mouse.display_text(2, " for the party)")
     else:
         uct_mouse.display_text(1, "DONE")
     uct_mouse.delay_ms(500)
@@ -465,7 +579,8 @@ def run_mission(rows, cols):
 def wait_for_start():
     """SW1 (press and release), then a second to get the hand out of the way."""
     uct_mouse.display_text(1, "SW1: start")
-    uct_mouse.display_text(3, "")       # back to the live battery readout
+    uct_mouse.display_text(3, "")       # clear the celebration screen: live battery
+    uct_mouse.display_text(4, "")       # and watchdog readouts again
     print("Press SW1 to start")
     while uct_mouse.get_button() == 0:
         uct_mouse.delay_ms(50)
@@ -484,13 +599,7 @@ def main():
     # after a run, wait for SW1 again (no power-cycling needed)
     while True:
         wait_for_start()
-        try:
-            run_mission(rows, cols)
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            uct_mouse.set_motors(0, 0)
-            note_exception(e)
+        run_mission(rows, cols)
         uct_mouse.set_motors(0, 0)
         uct_mouse.delay_ms(1500)
 

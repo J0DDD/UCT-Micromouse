@@ -14,13 +14,22 @@ ON_HARDWARE = True
 # Maze geometry
 # ---------------------------------------------------------------------------
 CELL_M = 0.20               # cell pitch (m)
+# Maze size as (rows, cols): rows = cells North from the start cell (to the
+# mouse's left at the start), cols = cells East (straight ahead at the start).
+# None = ask the firmware, which always says (4, 6) - the course maze.
+MAZE_SIZE = (9,9)          # e.g. (6, 6) or (8, 8) to try bigger mazes (None for the course 4x6!)
+PLAN_COAST_CELLS = 30       # mazes with more cells than this coast while planning on the move
+                            # (planning a 9x9 takes long enough to drive blind into a wall)
 DEFAULT_ROWS = 4            # fallback if the API cannot report the arena size
 DEFAULT_COLS = 6
 
 # ---------------------------------------------------------------------------
 # Chassis
 # ---------------------------------------------------------------------------
-TICKS_PER_M = 5670.0        # calibrate.ticks(): 5658 and 5678 ticks pushed over 1.000 m
+TICKS_PER_M = 5786.0        # 2026-10-26 (new right motor): calibrate.straight(5) went 0.980 m
+                            # with the odometer at 1.0001 m at 5670 (5670 = pushed by hand)
+TICKS_TRIM_L = 1.0          # per-wheel factor on TICKS_PER_M - calibrate.straight() then
+TICKS_TRIM_R = 1.0          # calibrate.distance(<measured m>) prints both
 HALF_TRACK  = 0.0550        # effective; calibrate.spin() 2026-10-23: 0.0548 (cw) / 0.0551 (ccw)
 GYRO_SCALE  = 0.992         # calibrate.turns(12) 2026-10-23, tethered: 1.000 -> ~22 deg short,
                             # 0.978 -> ~40 deg too far (over 1080 deg); straight-line zero ~0.992.
@@ -45,16 +54,37 @@ DT = LOOP_MS / 1000.0
 # direction - a wheel can need much more PWM to start backwards (pivots).
 FF_DEADBAND = 40.0          # (only used if a table is None)
 FF_GAIN    = 180.0
-# calibrate.motors(), 2026-10-23 (the right motor barely moves below ~35-40 PWM)
-FF_TABLE_L = ((0.0, 15), (0.043, 20), (0.131, 30), (0.184, 40), (0.221, 50), (0.252, 60),
-              (0.277, 70), (0.289, 80), (0.300, 90), (0.313, 100))
-FF_TABLE_R = ((0.0, 25), (0.024, 30), (0.066, 40), (0.198, 50), (0.236, 60), (0.252, 70),
-              (0.267, 80), (0.285, 90), (0.299, 100))
-# calibrate.motors(reverse=True), 2026-10-23
-FF_TABLE_L_REV = ((0.0, 15), (0.032, 20), (0.115, 30), (0.182, 40), (0.230, 50), (0.255, 60),
-                  (0.272, 70), (0.282, 80), (0.297, 90), (0.303, 100))
-FF_TABLE_R_REV = ((0.0, 25), (0.025, 30), (0.122, 40), (0.217, 50), (0.244, 60), (0.261, 70),
-                  (0.273, 80), (0.286, 90), (0.298, 100))
+# calibrate.motors() on the floor, 2026-10-26, after replacing the stiff right motor
+FF_TABLE_L = ((0.0, 15), (0.039, 20), (0.126, 30), (0.197, 40), (0.243, 50), (0.263, 60),
+              (0.287, 70), (0.304, 80), (0.315, 90), (0.327, 100))
+FF_TABLE_R = ((0.0, 15), (0.049, 20), (0.119, 30), (0.169, 40), (0.196, 50), (0.213, 60),
+              (0.236, 70), (0.251, 80), (0.265, 90), (0.280, 100))
+# calibrate.motors(reverse=True), 2026-10-26, new right motor
+FF_TABLE_L_REV = ((0.0, 15), (0.046, 20), (0.137, 30), (0.206, 40), (0.248, 50), (0.272, 60),
+                  (0.293, 70), (0.305, 80), (0.316, 90), (0.331, 100))
+FF_TABLE_R_REV = ((0.0, 15), (0.041, 20), (0.119, 30), (0.171, 40), (0.204, 50), (0.229, 60),
+                  (0.252, 70), (0.267, 80), (0.279, 90), (0.293, 100))
+# Previous tables (2026-10-23, right motor still free), measured at ~3.75 V:
+# FF_TABLE_L = ((0.0, 15), (0.043, 20), (0.131, 30), (0.184, 40), (0.221, 50), (0.252, 60),
+#               (0.277, 70), (0.289, 80), (0.300, 90), (0.313, 100))
+# FF_TABLE_R = ((0.0, 25), (0.024, 30), (0.066, 40), (0.198, 50), (0.236, 60), (0.252, 70),
+#               (0.267, 80), (0.285, 90), (0.299, 100))
+# FF_TABLE_L_REV = ((0.0, 15), (0.032, 20), (0.115, 30), (0.182, 40), (0.230, 50), (0.255, 60),
+#                   (0.272, 70), (0.282, 80), (0.297, 90), (0.303, 100))
+# FF_TABLE_R_REV = ((0.0, 25), (0.025, 30), (0.122, 40), (0.217, 50), (0.244, 60), (0.261, 70),
+#                   (0.273, 80), (0.286, 90), (0.298, 100))
+# Battery compensation: the tables above hold at the voltage they were
+# measured at; a fuller battery spins the wheels faster for the same PWM (the
+# mouse got twitchy), a flatter one slower. The output is scaled by
+# FF_TABLE_VBATT / battery voltage so the wheels behave the same at any charge.
+BATTERY_COMP = True
+FF_TABLE_VBATT = 3.87       # V (under load) when the tables were measured - calibrate.motors()
+                            # prints it (2026-10-26, new right motor: 3.87 both ways)
+BATTERY_COMP_MIN = 0.80     # limits on the scaling (a glitched reading cannot run away)
+BATTERY_COMP_MAX = 1.20
+VBATT_FILTER = 0.02         # per-period smoothing of the battery reading (~1 s)
+VBATT_MIN = 3.0             # readings outside this range are ignored
+VBATT_MAX = 4.5
 WHEEL_KP   = 120.0
 WHEEL_KI   = 900.0
 WHEEL_I_MAX = 35.0          # integral clamp (PWM)
@@ -73,25 +103,62 @@ COAST_TIME = 0.075          # s: after cutting power the mouse rolls ~speed * CO
 # ---------------------------------------------------------------------------
 # Straight-line motion (the slower wheel tops out at ~0.30 m/s)
 # ---------------------------------------------------------------------------
-EXPLORE_SPEED = 0.12        # m/s: slow and steady while mapping
+EXPLORE_SPEED = 0.15        # m/s while mapping (was 0.12)
 # Return / sprint top speed by straight length: (1 cell, 2 cells, 3+ cells).
 # The slower wheel tops out at ~0.30 m/s and steering needs some headroom
 # above the forward speed, so keep the last entries below ~0.28.
 RETURN_SPEEDS = (0.18, 0.20, 0.22)  # was 0.16 for every straight
-SPRINT_SPEEDS = (0.22, 0.25, 0.27)  # was 0.25 for every straight
+SPRINT_SPEEDS = (0.22, 0.25, 0.25)  # 3+ cells was 0.27: the new right motor tops out at
+                                    # 0.280 m/s, leaving too little for steering at 0.27
 # Curved corners: a quarter circle of TURN_RADIUS through the corner cell
 # instead of stop + pivot. The outer wheel runs (1 + HALF_TRACK / TURN_RADIUS)
 # = ~1.55x ARC_SPEED and the slower wheel tops out at ~0.30 m/s; the inner
 # one runs ~0.45x, and the right motor barely moves below ~0.07 m/s.
 SPRINT_CURVES = True        # False = stop and pivot at every sprint corner (as before)
-RETURN_CURVES = False       # same for the return run (try once the sprint is happy)
+RETURN_CURVES = True       # same for the known-path part of the return run (off: the return
+                            # pivots at every corner; on: see RETURN_ARC_FIRST_CELLS)
+RETURN_ARC_FIRST_CELLS = 2  # return: the first corner only curves after a straight of at least
+                            # this many cells (a shorter run-up pivots: the position after the
+                            # pirouette is not yet corrected by the walls)
+# Position uncertainty: grows with driving and curves, shrinks with wall
+# fixes. The wall ahead is believed over a wider mismatch the less certain the
+# position is (after several curves the old fixed windows rejected the real
+# wall as a stray reading, so the mouse turned early or stopped short).
+POS_UNC_PER_M = 0.03        # m of uncertainty per m driven (odometry error)
+ARC_POS_UNC   = 0.02        # m added by each curve (scrub, no walls during it)
+POS_UNC_MAX   = 0.08        # cap: the next wall over is 0.2 m away, never reach for it
+POS_UNC_FIXED = 0.02        # below this the position counts as pinned again
+ARC_AFTER_STOP_CELLS = 2    # after a pivot, the next corner only curves if the straight to it
+                            # is at least this long (shorter: pivot again - curving right
+                            # after a 1-cell run-up came too close to the outer post)...
+ARC_AFTER_STOP_UNC = 0.015  # ...unless walls at the pivot pinned the position to within this
+                            # (stopped at a wall ahead, then re-measured after turning)
+ARC_ENTRY_MAX_UNC = 0.030   # m: arriving at a corner less sure of the position than this, it
+                            # stops and pivots instead of curving (no wall ahead on the way in:
+                            # an early start cut the inner post twice on a 9x9 return)
+PIROUETTE_POS_UNC = 0.020   # m the 360 spin in the room adds to the position uncertainty
+PIVOT_POS_UNC = 0.010       # m a pivot adds (it can shift the mouse slightly); must stay
+                            # below ARC_AFTER_STOP_UNC, or a pivot right after an exact wall
+                            # stop could never be followed by a curve (it was equal: 0.015)
+ARC_MAX_CHAINED = 2         # curves in a row with no straight between (a U-turn is 2); the
+                            # next one pivots (a zig-zag's 3rd curve clipped the inner post)
+ARC_MAX_UNFIXED = 3         # after this many curves without a wall fix, the next corner
+                            # stops at the wall and pivots (exact fix) instead of curving
+ARC_LAG_S     = 0.05        # s the wheels take to answer a new turn rate: curves start and end
+                            # this much early and aim this far ahead (0 = off; they swung wide
+                            # into the outer wall and finished under-turned)
+STOP_ALIGN_DIST = 0.05      # m before a stop: fade out the centring angle so it stops parallel
 TURN_RADIUS   = 0.10        # m: half a cell, the path passes the corner post at 10 cm
 ARC_SPEED     = 0.16        # m/s along the arc (outer wheel ~0.25, inner ~0.07)
+ARC_RIGHT_TURNS = True      # False: right-hand sprint corners stop and pivot instead (used
+                            # while the old right motor was stiff: as the slow inner wheel it
+                            # stuck and made right curves too tight)
 ACCEL         = 0.6         # m/s^2
 DECEL         = 0.5         # m/s^2
 SPRINT_ACCEL  = 0.8
 SPRINT_DECEL  = 0.45        # was 0.7: braked late and hard, then stopped abruptly at walls
-CREEP_SPEED   = 0.04        # minimum approach speed so we always arrive
+CREEP_SPEED   = 0.04        # minimum approach speed so we always arrive (0.07 while the old
+                            # right motor was stiff)
 START_SOFT_MS = 200         # gentle acceleration window when pulling away from rest
 START_ACCEL   = 0.3         # m/s^2 during that window
 
@@ -134,8 +201,8 @@ TURN_DECEL    = 8.0         # rad/s^2 planned braking (was 10)
 TURN_LAG      = 0.14        # s, lag allowed for when braking. Measured over 12 turns: 0.10 ~10 deg,
                             # 0.14 ~5 deg (best), 0.18 ~15 deg - the visible overshoot looks like
                             # gyro reading latency, which braking earlier cannot fix
-TURN_W_MIN    = 0.8         # rad/s creep for the last degrees (was 1.0: less coast past the target;
-                            # the right motor still moves at ~30 PWM in reverse)
+TURN_W_MIN    = 0.8         # rad/s creep for the last degrees (1.2 while the old right motor
+                            # was stiff and stuck at 0.044 m/s per wheel)
 TURN_TOL      = 0.035       # rad (~2 deg) acceptance window
 TURN_RATE_TOL = 0.35        # rad/s, must have nearly stopped rotating
 TURN_TIMEOUT_MS = 3000
@@ -164,7 +231,8 @@ TOF_HOLD_S    = 0.12        # a dropout shorter than this keeps the last value
                             # (the firmware drops many close-range readings)
 SIDE_REF_DEFAULT  = 0.065   # side reading when centred (recalibrated in the start cell)
 FRONT_STOP_DEFAULT = 0.065  # front reading to stop at: ~5 cm nose gap (wall-stop tests)
-FRONT_CAL_ROUNDS = 2        # start-cell front calibration: face N then S this many times
+FRONT_CAL_ROUNDS = 1        # start-cell front calibration: face N then S this many times
+                            # (was 2: one left-right look is enough, saves ~3 s)
 FRONT_STOP_MIN = 0.035      # only accept a calibrated front reference inside this range
 FRONT_STOP_MAX = 0.080
 FRONT_STOP_EXTRA = 0.010    # stop this much further from a wall ahead than the cell centre
@@ -181,8 +249,11 @@ SIDE_WALL_MARGIN  = 0.050   # side wall present if reading < side_ref + margin
 # would be ~0.2 m further) - even if the mouse has drifted far from it.
 STEER_WALL_ON  = 0.09       # a side wall counts below side_ref + this...
 STEER_WALL_OFF = 0.11       # ...and stops counting above side_ref + this (hysteresis)
-CLOSE_SPEED = 0.08          # m/s cap only while inside the minimum side clearance
-                            # (an open side alone no longer slows it down)
+CLOSE_SPEED = 0.08          # m/s cap only while a side reading is under CLOSE_SLOW_READING
+CLOSE_SLOW_READING = 0.035  # m: slow down only this close (was: whenever under
+                            # CLEAR_MIN_READING, i.e. only ~1.5 cm off centre - it crawled)
+LAT_BOOST_FROM = 0.010      # m off centre: beyond this, recentre harder...
+LAT_BOOST = 2.5             # ...counting each extra mm this many times (1 = off)
 OPEN_SIDE_LEAN = 0.0        # m: off - aiming towards the single wall flipped sides when the
                             # wall switched from left to right between cells
 # Minimum clearance from the closest wall/post (on top of the centring)
@@ -216,7 +287,18 @@ LOCALISE_GAIN   = 0.5
 SIDE_SENSOR_X = 0.040       # side ToF distance ahead of the axle (calibrate.edge())
 EDGE_DEBOUNCE = 2
 EDGE_WINDOW   = 0.035
-EDGE_FIX_GAIN = 0.0         # off: filtered readings can see a wall end ~3 cm late
+EDGE_FIX_GAIN = 0.5         # how much a side-wall edge (post) corrects the position along the
+                            # corridor; off until calibrate.edges() has measured the offsets
+                            # below (they read ~3 cm late without them) - then 0.5
+EDGE_AFTER_M  = 0.40        # ...and only after this far (2 cells) with no other position fix and
+                            # no wall ahead in range: long corridors only (9x9 post crash), so
+                            # the tested 4x6 / corridor behaviour stays as it was
+# calibrate.edges(), 2026-10-27 (7-cell corridor, gap on the left of cell 2), fitted per
+# kind against the measured speed: edge seen with the axle X - v * LAG short of the boundary
+EDGE_APPEAR_X = 0.070       # a wall starting: 52 mm at 0.12 m/s, 31 mm at 0.26 m/s
+EDGE_APPEAR_LAG_S = 0.150
+EDGE_VANISH_X = 0.013       # a wall ending: ~10 mm at any speed
+EDGE_VANISH_LAG_S = 0.010
 ODO_LEARN_GAIN = 0.3        # how fast front-wall stops adapt the odometry scale
 ODO_LEARN_MIN_DIST = 0.15
 ODO_SCALE_MIN = 0.85
@@ -229,7 +311,20 @@ GYRO_CAL_SAMPLES = 100      # 2 s of stationary samples
 GYRO_CAL_MAX_SPREAD = 8.0   # dps: a wider spread means the mouse moved during calibration
 GYRO_BIAS_TRACK = 0.2       # each stationary stop moves the gyro bias this fraction towards
                             # the reading at rest (cancels slow drift over a long run)
-MAP_ON_THE_MOVE = False     # stop in every new cell and map it while stationary (wide beams)
+MAP_ON_THE_MOVE = True      # keep driving through a new cell when the readings taken while
+                            # passing through all agree; stop to look only when in doubt
+                            # (False = stop in every new cell, as before)
+MOVE_MAP_MIN_SAMPLES = 4    # readings needed while passing the cell's middle
+MOVE_MAP_FRONT_SPREAD = 0.06  # m: front readings must stay within this of each other
+OBSERVE_SAMPLES = 3         # stationary readings per exploration stop (was 5)
+# Dead ends while exploring: back out instead of turning round, when the
+# route turns off within this many (already visited) cells - the turn there
+# then replaces the 180. 0 = always turn round as before.
+REVERSE_MAX_CELLS = 2
+REVERSE_SPEED = 0.15        # m/s backing up (no sensor looks backwards)
+REVERSE_TOF_RANGE = 0.30    # m: at the end, correct the distance with the dead-end wall
+REVERSE_TOF_GAIN = 0.5      # if the front reading is under this (longer reads too short)
+PIROUETTE_MERGE = True      # add a clockwise turn towards the way out to the 360 spin
 STILL_WEIGHT = 2            # map votes of a stationary observation
 START_WALL_PRIOR = 100      # the start cell's N wall / E opening are fixed by the rules
 SAMPLE_FROM = -0.12         # (only used when mapping on the move)
@@ -237,13 +332,12 @@ SAMPLE_TO = -0.065
 DECIDE_BEFORE_CENTRE = 0.06
 SPRINT_PAUSE_MS  = 3000
 TURN_COST_CELLS  = 1.5      # planner: a pivot (stop, turn, restart) costs ~1.5 cells of time
-VERBOSE = True              # print each move over USB while testing tethered
-RUN_NOTES = True            # add progress notes to the kernel run log (tools/dump_logs.py)
+VERBOSE = False             # progress messages: True = print as they happen (USB / serial),
+                            # "after" = hold them and print when the run ends (nothing is
+                            # printed on the move), False = none. Printing on the move costs
+                            # ~10 ms a line and seemed to change the driving (2026-10-27).
+LOG_KEEP = 40               # messages held with "after" (oldest dropped; each costs RAM)
 # End-of-run celebration after a successful sprint (celebrate.py)
 CELEBRATE = True
-CELEBRATE_DELAY_MS = 2000   # pause after the sprint stops before the twerk starts
-CELEBRATE_BEATS = 16        # wiggles (each one swings the rear one way)
-CELEBRATE_BEAT_MS = 160     # length of one wiggle
-CELEBRATE_FRAME_MS = 700    # how long each OLED animation frame stays up
-TWERK_V = 0.05              # m/s back / forth bob during a wiggle
-TWERK_W = 2.0               # rad/s rear swing during a wiggle
+CELEBRATE_DELAY_MS = 2000   # pause after the sprint stops before the banner starts
+BANNER_FRAME_MS = 140       # each step of the scrolling "MAZE SOLVED!" banner

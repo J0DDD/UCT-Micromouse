@@ -226,21 +226,21 @@ class MazeMap:
         if self.room is not None:
             return self.room_cells()
         goals = []
-        for i in range((self.rows - 1) * (self.cols - 1)):
-            bx = i % (self.cols - 1)
-            by = i // (self.cols - 1)
+        taken = bytearray(self.n)           # cells already in goals (a list search was slow
+        c = self.cols                       # on big mazes: it ran while the mouse was driving)
+        for i in range((self.rows - 1) * (c - 1)):
+            bx = i % (c - 1)
+            by = i // (c - 1)
             if self.room_possible(bx, by):
-                self._add_unvisited_block_cells(goals, bx, by)
+                for ci in (by * c + bx, by * c + bx + 1, (by + 1) * c + bx, (by + 1) * c + bx + 1):
+                    if not self.visited[ci] and not taken[ci]:
+                        taken[ci] = 1
+                        goals.append((ci % c, ci // c))
         if not goals:
             for i in range(self.n):
                 if not self.visited[i]:
                     goals.append((i % self.cols, i // self.cols))
         return goals
-
-    def _add_unvisited_block_cells(self, goals, bx, by):
-        for c in ((bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)):
-            if not self.is_visited(c[0], c[1]) and c not in goals:
-                goals.append(c)
 
     # ------------------------------------------------------------------
     # Floodfill (BFS distance from the goal set)
@@ -303,15 +303,19 @@ class MazeMap:
         straights are preferred over zig-zags of the same length. Returns the
         list of headings to drive (one entry per cell moved), or None.
         """
+        # Costs are whole tenths of a cell: small integers need no RAM of
+        # their own in MicroPython, whereas every float is a separate heap
+        # object (~16 bytes each) - with floats a 9x9 maze ran out of memory.
         n_states = self.n * 4
-        cost = [INF * 10.0] * n_states
+        turn = int(turn_cost * 10.0 + 0.5)
+        cost = [INF * 10] * n_states
         prev = [-1] * n_states
         done = bytearray(n_states)
         goal_idx = []
         for g in goals:
             goal_idx.append(self.index(g[0], g[1]))
         s0 = self.index(start[0], start[1]) * 4 + start_heading
-        cost[s0] = 0.0
+        cost[s0] = 0
         end_state = -1
         for _ in range(n_states):
             s = self._cheapest_open_state(cost, done)
@@ -322,7 +326,7 @@ class MazeMap:
             if ci in goal_idx:
                 end_state = s
                 break
-            self._relax_state(s, cost, prev, done, turn_cost)
+            self._relax_state(s, cost, prev, done, turn)
         if end_state < 0:
             return None
         headings = []
@@ -337,7 +341,7 @@ class MazeMap:
 
     def _cheapest_open_state(self, cost, done):
         best = -1
-        best_cost = INF * 10.0
+        best_cost = INF * 10
         for s in range(len(cost)):
             if not done[s] and cost[s] < best_cost:
                 best_cost = cost[s]
@@ -359,7 +363,7 @@ class MazeMap:
         # move forward one cell
         if self.get(x, y, h) == OPEN:
             ns = (ci + DX[h] + DY[h] * self.cols) * 4 + h
-            c = cost[s] + 1.0
+            c = cost[s] + 10
             if not done[ns] and c < cost[ns]:
                 cost[ns] = c
                 prev[ns] = s

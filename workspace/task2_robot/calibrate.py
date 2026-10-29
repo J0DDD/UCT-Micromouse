@@ -8,14 +8,16 @@
 #   import calibrate
 #   calibrate.sensors()      # 1. polarity + ToF/gyro sanity, side_ref/front_stop
 #   calibrate.timing()       # 2. control-loop and planner timing on the MCU
-#   calibrate.ticks()        # 3. TICKS_PER_M   (push it exactly 1 m by hand)
-#   calibrate.straight(5)    #    check: drives 1 m closed-loop
+#   calibrate.straight(5)    # 3. TICKS_PER_M: drives 1 m, mark start/end under the axle,
+#   calibrate.distance(0.98) #    then give the measured metres (no pushing needed)
 #   calibrate.spin(3)        # 4. HALF_TRACK    (check it ends facing the same way)
 #   calibrate.motors()       # 5. motor tables, forwards (needs ~1.5 m clear floor ahead)
 #   calibrate.motors(reverse=True)   #    ... and backwards (clear floor BEHIND)
 #   calibrate.spin(3, clockwise=True)  #  right turns use the right wheel in reverse
 #   calibrate.edge()         # 6. SIDE_SENSOR_X (in the maze, see docstring)
+#   calibrate.edges()        #    side-wall edge offsets for position fixes along corridors
 #   calibrate.turns(12)      # 7. GYRO_SCALE: make 90 degree turns exactly 90 degrees
+#   calibrate.celebration()  # preview the end-of-run banner and times screen
 #
 # (Each routine can also be smoke-tested against tools/physics_sim.py.)
 # =========================================================================
@@ -38,12 +40,124 @@ def _init_once():
         _inited = True
 
 
-def _setup():
+def celebration():
+    """Preview the end-of-run celebration without doing a run: the banner,
+    then the times screen (with example times)."""
+    import celebrate
+    _init_once()
+    uct_mouse.set_motors(0, 0)
+    times = {"total": 112.4, "explore": 71.2, "return": 18.9, "sprint": 5.1}
+    celebrate.play_banner(times)
+    celebrate.times_screen(times)
+    print("done")
+
+
+def memory(rows=9, cols=9):
+    """Will a rows x cols maze fit in the robot's RAM? Builds the same things
+    a run does (robot, map, planner on a fully open maze - the most work) and
+    prints the free memory at the tightest point. No motors move."""
+    import gc
+    main = _mission()
+    import maze as mz
+    if not hasattr(gc, "mem_free"):
+        gc.mem_free = lambda: -1            # (the PC has no such limit)
+    _init_once()
+    uct_mouse.set_motors(0, 0)
+    gc.collect()
+    print("free before: %d bytes" % gc.mem_free())
+    r = Robot()
+    s = main.MazeSolver(r, rows, cols)
+    m = s.map
+    for i in range(m.n):
+        for d in range(4):
+            x = i % cols
+            y = i // cols
+            if m.get(x, y, d) == mz.UNKNOWN:
+                m.set_wall(x, y, d, mz.OPEN)
+    gc.collect()
+    print("with a %d x %d map: %d bytes free" % (rows, cols, gc.mem_free()))
+    m.floodfill([(cols - 1, rows - 1)], True)
+    t0 = uct_mouse.get_ticks_ms()
+    path = m.fastest_path((0, 0), mz.EAST, [(cols - 1, rows - 1)], TURN_COST_CELLS)
+    t1 = uct_mouse.get_ticks_ms()
+    print("route planning: %d ms, %d bytes free after (path of %d cells)" % (
+        t1 - t0, gc.mem_free(), len(path) if path else 0))
+    gc.collect()
+    print("free at the end: %d bytes  (under ~2000 is too tight)" % gc.mem_free())
+
+
+def _mission():
+    """The mission code (main.py) without starting a run: on the robot
+    build_robot.py ships it as mission.mpy and main.py is a loader that starts
+    the mission as soon as it is imported - so never import main there."""
+    try:
+        import mission
+        return mission
+    except ImportError:
+        import main                         # PC / simulator: main.py is the code itself
+        return main
+
+
+def edges(cells=3, speeds=(0.12, 0.24), rounds=2):
+    """Measure where side-wall edges (posts) are seen, for the along-the-
+    corridor position fixes (EDGE_APPEAR_X / _LAG_S, EDGE_VANISH_X / _LAG_S).
+
+    Set up a straight corridor at least `cells` + 1 cells long with walls on
+    both sides, except ONE missing side wall segment 1 or 2 cells ahead (so a
+    wall ends at one cell boundary and starts again at the next). Put the
+    mouse centred in the first cell, facing along it, and run
+        calibrate.edges()
+    It drives `cells` cells at each speed, reversing back in between (keep
+    clear), and prints the values for config.py. The gap must be passed
+    completely within `cells` cells (e.g. gap in cell 2 of the corridor:
+    cells=3 is enough; gap in cell 4: cells=4).
+    """
+    r = _setup()
+    if r.tof_l < 0.15 and r.tof_r < 0.15:
+        r.side_ref = (r.tof_l + r.tof_r) / 2.0
+        r.side_ref_l = r.side_ref
+        r.side_ref_r = r.side_ref
+    x0 = r.px
+    found = {True: [], False: []}           # appeared? -> [(speed, mm short of boundary)]
+    for v in speeds:
+        for _ in range(rounds):
+            r.drive_to(x0 + cells * CELL_M, r.py, 1, v)
+            for appeared, at, vs in r.last_edges:
+                a = at - x0 + 0.5 * CELL_M  # axle along the corridor, start cell centre = 0.1
+                b = math.floor((a + 0.04) / CELL_M + 0.5) * CELL_M
+                found[appeared].append((vs, b - a))
+                print("  %s seen at %.2f m/s: axle %.1f mm short of the boundary" % (
+                    "wall start" if appeared else "wall end  ", vs, 1000.0 * (b - a)))
+            uct_mouse.delay_ms(300)
+            r.reverse(1, r.px - x0)
+            uct_mouse.delay_ms(300)
+    # each kind separately: offset = X - speed * LAG, a straight-line fit
+    # against the speed each edge was actually seen at
+    for appeared in (True, False):
+        pts = found[appeared]
+        name = "APPEAR" if appeared else "VANISH"
+        if len(pts) < 2:
+            print("EDGE_%s: not seen often enough - is the gap within %d cells?" % (name, cells))
+            continue
+        n = len(pts)
+        mv = sum(p[0] for p in pts) / n
+        mo = sum(p[1] for p in pts) / n
+        var = sum((p[0] - mv) ** 2 for p in pts)
+        lag = 0.0
+        if var > 1e-4:
+            lag = max(0.0, -sum((p[0] - mv) * (p[1] - mo) for p in pts) / var)
+        print("EDGE_%s_X = %.3f" % (name, mo + mv * lag))
+        print("EDGE_%s_LAG_S = %.3f" % (name, lag))
+    print("Paste these into config.py (EDGE_FIX_GAIN = 0.5 uses them)")
+
+
+def _setup(quiet=False):
     """Initialise once per session; return a fresh, freshly calibrated Robot."""
     global _robot
     _init_once()
     uct_mouse.set_motors(0, 0)
-    print("hands off - calibrating in 1.5 s")
+    if not quiet:
+        print("hands off - calibrating in 1.5 s")
     uct_mouse.delay_ms(1500)
     _robot = Robot()                 # fresh state: no stale ToF/odometry from a previous test
     r = _robot
@@ -56,7 +170,7 @@ def _setup():
 
 def _encoders_m(r):
     e = uct_mouse.get_encoders()
-    return e[0] / r.ticks_per_m, e[1] / r.ticks_per_m
+    return e[0] / r.ticks_per_m_l, e[1] / r.ticks_per_m_r
 
 
 # -------------------------------------------------------------------------
@@ -197,6 +311,8 @@ def straight(cells=5, speed=EXPLORE_SPEED):
     """
     r = _setup()
     l0, r0 = _encoders_m(r)
+    t0 = uct_mouse.get_encoders()
+    g0 = r.gyro_total
     ex = r.px + cells * CELL_M
     peak = [0.0, 0.0, 0]                 # max measured speed, sum of cruise speeds, samples
 
@@ -210,6 +326,8 @@ def straight(cells=5, speed=EXPLORE_SPEED):
 
     r.drive_to(ex, r.py, 1, speed, on_tick=watch)
     l1, r1 = _encoders_m(r)
+    t1 = uct_mouse.get_encoders()
+    _last_straight[:] = [t1[0] - t0[0], t1[1] - t0[1], r.gyro_total - g0]
     odo = ((l1 - l0) + (r1 - r0)) / 2.0
     print("odometer: %.4f m (left %.4f, right %.4f), commanded %.3f m" % (
         odo, l1 - l0, r1 - r0, cells * CELL_M))
@@ -223,9 +341,37 @@ def straight(cells=5, speed=EXPLORE_SPEED):
     if r.cut_speed > 0.01:
         print("  with NO wall ahead (open floor), COAST_TIME = %.3f would cancel it (now %.3f)" % (
             max(0.0, COAST_TIME + over / r.cut_speed), COAST_TIME))
-    print("TICKS_PER_M is %.1f -> new value = %.1f * %.4f / <measured metres>" % (
-        r.ticks_per_m, r.ticks_per_m, odo))
+    print("heading change by the gyro: %+.1f deg" % math.degrees(_last_straight[2]))
+    print("Now measure how far the axle really moved (m) and run  calibrate.distance(<metres>)")
     return odo
+
+
+_last_straight = [0, 0, 0.0]    # raw left/right ticks and gyro angle of the last straight()
+
+
+def distance(measured_m):
+    """After calibrate.straight(): the real distance the axle moved (metres,
+    measured on the floor) -> TICKS_PER_M and the per-wheel trims.
+
+    Each wheel's true path is the axle's distance plus or minus half the
+    track times the angle the gyro saw (a slight curve makes the outer wheel
+    go further), so the wheels can be calibrated separately without pushing
+    the mouse by hand."""
+    tl, tr, dth = _last_straight
+    if tl == 0 or tr == 0:
+        print("run calibrate.straight() first")
+        return
+    true_l = measured_m - dth * HALF_TRACK
+    true_r = measured_m + dth * HALF_TRACK
+    tpm_l = tl / true_l
+    tpm_r = tr / true_r
+    mean = (tpm_l + tpm_r) / 2.0
+    print("left %d ticks over %.4f m -> %.0f /m;  right %d ticks over %.4f m -> %.0f /m" % (
+        tl, true_l, tpm_l, tr, true_r, tpm_r))
+    print("TICKS_PER_M = %.1f" % mean)
+    print("TICKS_TRIM_L = %.4f" % (tpm_l / mean))
+    print("TICKS_TRIM_R = %.4f" % (tpm_r / mean))
+    print("(run straight + distance two or three times and average before pasting)")
 
 
 # -------------------------------------------------------------------------
@@ -335,6 +481,8 @@ def motors(levels=(20, 30, 40, 50, 60, 70, 80, 90, 100), hold_ms=600, reverse=Fa
     r = _setup()
     sgn = -1 if reverse else 1
     rows = []
+    v_sum = 0.0
+    v_n = 0
     for p in levels:
         uct_mouse.set_motors(sgn * p, sgn * p)
         t_end = uct_mouse.get_ticks_ms() + hold_ms
@@ -342,6 +490,10 @@ def motors(levels=(20, 30, 40, 50, 60, 70, 80, 90, 100), hold_ms=600, reverse=Fa
         started = False
         while uct_mouse.get_ticks_ms() < t_end:
             uct_mouse.delay_ms(LOOP_MS)
+            v = uct_mouse.get_vbatt()       # battery voltage while driving (under load)
+            if VBATT_MIN < v < VBATT_MAX:
+                v_sum += v
+                v_n += 1
             if not started and uct_mouse.get_ticks_ms() >= settle:
                 l0, r0 = _encoders_m(r)
                 ts = uct_mouse.get_ticks_ms()
@@ -369,7 +521,9 @@ def motors(levels=(20, 30, 40, 50, 60, 70, 80, 90, 100), hold_ms=600, reverse=Fa
                 pts.append("(%.3f, %d)" % (row[side], row[0]))
                 best = row[side]
         print("FF_TABLE_%s%s = (%s)" % (name, suffix, ", ".join(pts)))
-    print("Paste these into config.py; set SPRINT_SPEED to ~0.85 x the slower top speed.")
+    if v_n:
+        print("FF_TABLE_VBATT = %.2f    # battery voltage while these were measured" % (v_sum / v_n))
+    print("Paste these into config.py (with FF_TABLE_VBATT, so battery compensation matches).")
     return rows
 
 

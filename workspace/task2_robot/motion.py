@@ -200,8 +200,9 @@ class EdgeTracker:
         self.count = [0, 0]
         self.last_along = along
         self.last_step = 0.0
+        self.events = []            # (wall appeared?, axle along, speed) - calibrate.edges()
 
-    def update(self, left, right, along):
+    def update(self, left, right, along, v=0.0):
         fix = 0.0
         now = (left, right)
         for i in range(2):
@@ -211,7 +212,10 @@ class EdgeTracker:
                     self.state[i] = now[i]
                     self.count[i] = 0
                     # the change began EDGE_DEBOUNCE - 1 samples ago
-                    f = self._fix(along - (EDGE_DEBOUNCE - 1) * self.last_step)
+                    at = along - (EDGE_DEBOUNCE - 1) * self.last_step
+                    if len(self.events) < 20:
+                        self.events.append((now[i], at, v))
+                    f = self._fix(at, now[i], v)
                     if f != 0.0:
                         fix = f
             else:
@@ -220,9 +224,19 @@ class EdgeTracker:
         self.last_along = along
         return fix
 
-    def _fix(self, at):
-        k = int((at + SIDE_SENSOR_X) / CELL_M + 0.5)
-        err = k * CELL_M - SIDE_SENSOR_X - at
+    def _fix(self, at, appeared, v):
+        # The wide beam sees a wall that starts a little early and one that
+        # ends a little late (EDGE_APPEAR_X / EDGE_VANISH_X: how far short of
+        # the boundary the axle is when it is seen, at standstill), and the
+        # sensor delay makes an edge show up v * EDGE_..._LAG_S later - very
+        # different for the two (a wall end is seen almost at once, a wall
+        # start only once the filtered reading has dropped).
+        if appeared:
+            x = EDGE_APPEAR_X - v * EDGE_APPEAR_LAG_S
+        else:
+            x = EDGE_VANISH_X - v * EDGE_VANISH_LAG_S
+        k = math.floor((at + x) / CELL_M + 0.5)        # (floor: also right for West / South)
+        err = k * CELL_M - x - at
         if abs(err) < EDGE_WINDOW:
             return err
         return 0.0
@@ -231,6 +245,8 @@ class EdgeTracker:
 class Robot:
     def __init__(self):
         self.ticks_per_m = TICKS_PER_M
+        self.ticks_per_m_l = TICKS_PER_M * TICKS_TRIM_L     # each wheel's own scale
+        self.ticks_per_m_r = TICKS_PER_M * TICKS_TRIM_R
         self.half_track = HALF_TRACK
         self.gyro_trust = GYRO_TRUST
         self.gyro_bias = 0.0
@@ -238,6 +254,7 @@ class Robot:
         self.side_ref_l = SIDE_REF_DEFAULT  # per-sensor references (calibrate_in_start_cell)
         self.side_ref_r = SIDE_REF_DEFAULT
         self.too_close = False              # a side sensor is inside the minimum clearance
+        self.too_close_slow = False         # ...and so close that the mouse slows down
         self.slope = WallSlope()            # parallel check against the side walls
         self.last_slope_fix = 0.0           # deg, last heading correction it made (log)
         self.post_l = PostRejector()        # side readings for steering, posts removed
@@ -263,11 +280,20 @@ class Robot:
         self.vr = 0.0
         self.il = 0.0               # wheel-loop integrators, PWM
         self.ir = 0.0
+        self.vbatt = FF_TABLE_VBATT # filtered battery voltage (battery compensation)
+        v = uct_mouse.get_vbatt()
+        if VBATT_MIN < v < VBATT_MAX:
+            self.vbatt = v
         self.lat = 0.0              # filtered wall-measured lateral error, m (+ = left)
         self.lat_valid = False
         self.lat_delta = 0.0        # m, wall correction of the lateral position this period
+        self.lat_scale = 1.0        # share of the centring angle in use (faded out before stops)
         self.slip_correct = False   # only meaningful while driving straight
         self.odo_scale = 1.0        # learned true-metres per encoder-metre (slip, wheel size)
+        self.pos_unc = 0.0          # m, how far off the position may be (grows with driving
+                                    # and curves, shrinks with wall fixes)
+        self.arcs_since_fix = 0     # curves driven since the position was last pinned
+        self.dist_since_pin = 0.0   # m driven since then (edge fixes only after a long stretch)
         self.odo_since_fix = 0.0    # odometry distance since the last exact along-track fix
         self.corr_since_fix = 0.0   # corrections applied since then
         self.tof_l = TOF_MAX_M
@@ -300,8 +326,8 @@ class Robot:
         self.dt = clamp((now - self.last_ms) / 1000.0, 0.002, 0.1)
         self.last_ms = now
         enc = uct_mouse.get_encoders()
-        dl = (enc[0] - self.enc_l) / self.ticks_per_m
-        dr = (enc[1] - self.enc_r) / self.ticks_per_m
+        dl = (enc[0] - self.enc_l) / self.ticks_per_m_l
+        dr = (enc[1] - self.enc_r) / self.ticks_per_m_r
         self.enc_l = enc[0]
         self.enc_r = enc[1]
 
@@ -322,6 +348,8 @@ class Robot:
             lost = abs(d_gyro - d_enc) * self.half_track
             ds = max(0.0, ds - lost)
         ds *= self.odo_scale
+        self.pos_unc = min(POS_UNC_MAX, self.pos_unc + POS_UNC_PER_M * abs(ds))
+        self.dist_since_pin += abs(ds)
         self.fwd += ds
         if ds > 0.0:
             self.odo_since_fix += ds
@@ -329,6 +357,11 @@ class Robot:
         self.px += ds * math.cos(mid)
         self.py += ds * math.sin(mid)
         self.heading += d_head
+
+        if BATTERY_COMP:
+            v = uct_mouse.get_vbatt()
+            if VBATT_MIN < v < VBATT_MAX:   # ignore glitched readings
+                self.vbatt += VBATT_FILTER * (v - self.vbatt)
 
         self.vl = VEL_FILTER * self.vl + (1.0 - VEL_FILTER) * dl / self.dt
         self.vr = VEL_FILTER * self.vr + (1.0 - VEL_FILTER) * dr / self.dt
@@ -346,6 +379,7 @@ class Robot:
         self.px += ux * err * gain
         self.py += uy * err * gain
         self.corr_since_fix += err * gain
+        self._pinned(1.0 if exact else gain)
         if not exact:
             return
         d = self.odo_since_fix
@@ -356,6 +390,14 @@ class Robot:
         self.odo_since_fix = 0.0
         self.corr_since_fix = 0.0
 
+    def _pinned(self, gain):
+        """A wall fix of strength `gain` (1 = exact): the position is that
+        much more certain again."""
+        self.pos_unc *= 1.0 - gain
+        if self.pos_unc < POS_UNC_FIXED:
+            self.arcs_since_fix = 0
+            self.dist_since_pin = 0.0
+
     def localise_axis(self, direction, wall_along, reading, sensor_ofs):
         """Stationary position fix along maze `direction` from a ToF reading to
         a mapped wall face at `wall_along` on that axis. `sensor_ofs` is the
@@ -365,9 +407,10 @@ class Robot:
         uy = DIR_UY[direction]
         expected = wall_along - 0.5 * CELL_M - (reading - sensor_ofs)
         err = expected - (self.px * ux + self.py * uy)
-        if abs(err) < LOCALISE_WINDOW:
+        if abs(err) < LOCALISE_WINDOW + self.pos_unc:
             self.px += ux * err * LOCALISE_GAIN
             self.py += uy * err * LOCALISE_GAIN
+            self._pinned(LOCALISE_GAIN)
 
     def set_position(self, x, y):
         self.px = x
@@ -488,6 +531,13 @@ class Robot:
         pr, self.ir = self._wheel_pwm(ref_r, self.vr, self.ir,
                                       FF_TABLE_R if ref_r >= 0.0 else FF_TABLE_R_REV)
         self._check_direction(ref_l, ref_r)
+        if BATTERY_COMP:
+            # The motor tables were measured at FF_TABLE_VBATT: with a fuller
+            # battery the same PWM spins the wheels faster (and slower when
+            # low), so scale the output to give the speed the tables promise.
+            s = clamp(FF_TABLE_VBATT / self.vbatt, BATTERY_COMP_MIN, BATTERY_COMP_MAX)
+            pl = clamp(pl * s, -100.0, 100.0)
+            pr = clamp(pr * s, -100.0, 100.0)
         uct_mouse.set_motors(int(pl), int(pr))
         # delay_ms() is a plain wait on the robot and the Python code itself
         # takes time: hold a steady LOOP_MS period by waiting only for the rest
@@ -525,7 +575,7 @@ class Robot:
             self._read_sensors()
             waited += LOOP_MS
 
-    def sample_still(self, n=5):
+    def sample_still(self, n=5, track_bias=None):
         """Average n stationary ToF samples (more robust wall classification).
 
         Also re-estimates the gyro bias: the mouse is standing still, so the
@@ -550,7 +600,9 @@ class Robot:
         self.tof_c = sc / n
         self.tof_r = sr / n
         e1 = uct_mouse.get_encoders()
-        if n >= 5 and abs(e1[0] - e0[0]) <= 1 and abs(e1[1] - e0[1]) <= 1:
+        if track_bias is None:
+            track_bias = n >= 5
+        if track_bias and abs(e1[0] - e0[0]) <= 1 and abs(e1[1] - e0[1]) <= 1:
             self.gyro_bias += GYRO_BIAS_TRACK * (sg / n - self.gyro_bias)
 
     # ------------------------------------------------------------------
@@ -716,6 +768,7 @@ class Robot:
         close_l = near_l > 0.0
         close_r = near_r > 0.0
         self.too_close = close_l or close_r
+        self.too_close_slow = min(self.steer_l, self.steer_r) < CLOSE_SLOW_READING
         if close_l and close_r:
             # squeezed on both sides: steer for the middle of the two readings
             lateral = (self.steer_r - self.steer_l) / 2.0
@@ -729,7 +782,17 @@ class Robot:
             lateral = min(lateral, -near_r)              # push left
             k_lat = K_LATERAL
             lim = MAX_HEAD_OFS_CLOSE
+        # Recentre harder the further off-centre: within LAT_BOOST_FROM the
+        # gentle K_LATERAL (sensor noise stays smooth); beyond it every extra
+        # mm counts LAT_BOOST times, so a mouse left near a wall by a curve
+        # angles back towards the middle instead of creeping along parallel.
+        off = abs(lateral)
+        if off > LAT_BOOST_FROM:
+            extra = (off - LAT_BOOST_FROM) * (LAT_BOOST - 1.0)
+            lateral = lateral + extra if lateral > 0.0 else lateral - extra
         head_ofs = clamp(-k_lat * lateral, -lim, lim)
+        if not self.too_close:
+            head_ofs *= self.lat_scale
         err = path_heading + head_ofs - self.heading
         return clamp(K_HEADING * err, -MAX_STEER_W, MAX_STEER_W)
 
@@ -785,8 +848,13 @@ class Robot:
         while guard < 3000:
             guard += 1
             # A side wall starting/ending marks a cell boundary: re-anchor along-track
-            fix = edges.update(self.left_wall(), self.right_wall(), self.px * ux + self.py * uy)
-            if fix != 0.0:
+            fix = edges.update(self.left_wall(), self.right_wall(), self.px * ux + self.py * uy,
+                               max(0.0, (self.vl + self.vr) / 2.0))
+            # Edge fixes are the last resort: only after EDGE_AFTER_M of driving
+            # with nothing else pinning the position (long corridors), and not
+            # while a wall ahead is in range (the front sensor is better).
+            if (fix != 0.0 and self.dist_since_pin > EDGE_AFTER_M
+                    and self.tof_c > FRONT_POSE_RANGE):
                 self.along_track_fix(fix, ux, uy, EDGE_FIX_GAIN)
             if on_tick is not None:
                 ext = on_tick()
@@ -828,7 +896,9 @@ class Robot:
             if wall_along is not None and front < FRONT_POSE_RANGE:
                 # the mapped wall ahead tells us where we are along the corridor
                 err = self._along_from_front(front, wall_along) - (self.px * ux + self.py * uy)
-                if abs(err) < FRONT_POSE_WINDOW:
+                # the less sure the position (after curves), the bigger the
+                # mismatch that is still believed to be the mapped wall
+                if abs(err) < FRONT_POSE_WINDOW + self.pos_unc:
                     self.along_track_fix(err, ux, uy, FRONT_POSE_GAIN)
                     dx = ex - self.px
                     dy = ey - self.py
@@ -841,7 +911,7 @@ class Robot:
                     # the map says where the wall ahead is: a reading that
                     # disagrees with it is a stray, not the wall
                     expected = wall_along - (self.px * ux + self.py * uy) - 0.5 * CELL_M + self.front_stop
-                    usable = abs(front - expected) < FRONT_MAP_WINDOW
+                    usable = abs(front - expected) < FRONT_MAP_WINDOW + self.pos_unc
                 # wall lines up with our end point, or is unexpectedly closer
                 if usable and (abs(by_tof - remaining) < 0.06 or by_tof < remaining):
                     remaining = by_tof
@@ -855,10 +925,16 @@ class Robot:
                 break
             v_allow = math.sqrt(v_end * v_end + 2.0 * decel * max(0.0, remaining - coast))
             v = min(v + accel * self.dt, v_max, max(v_allow, CREEP_SPEED))
-            if self.too_close:
-                # inside the minimum clearance of a wall/post: slow down while
-                # the clearance rule steers away
+            if self.too_close_slow:
+                # really close to a wall/post: slow down while the clearance
+                # rule steers away (just inside the clearance it only steers -
+                # that used to slow it to a crawl ~1.5 cm off centre)
                 v = min(v, CLOSE_SPEED)
+            # last few cm before a stop: straighten up rather than still be
+            # angled from re-centring when the wheels stop (the stops were skew)
+            self.lat_scale = 1.0
+            if v_end == 0.0 and remaining < STOP_ALIGN_DIST:
+                self.lat_scale = max(0.0, remaining / STOP_ALIGN_DIST)
             w = self._steer(path_heading, lateral_pose, v)
             if STEER_ON_POSE:
                 # apply the wall correction _steer made to the lateral position
@@ -892,9 +968,10 @@ class Robot:
             if wall_along is not None and self.tof_c < FRONT_POSE_RANGE:
                 # at rest in front of a mapped wall: exact along-track fix
                 err = self._along_from_front(self.tof_c, wall_along) - (self.px * ux + self.py * uy)
-                if abs(err) < FRONT_POSE_WINDOW:
+                if abs(err) < FRONT_POSE_WINDOW + self.pos_unc:
                     self.along_track_fix(err, ux, uy, 1.0, True)
         self.slip_correct = False
+        self.last_edges = edges.events      # for calibrate.edges()
 
     def _along_from_front(self, front, wall_along):
         """Axle position along the travel axis implied by a front reading of
@@ -902,7 +979,7 @@ class Robot:
         the axle is half a cell short of the wall)."""
         return wall_along - 0.5 * CELL_M - (front - self.front_stop)
 
-    def arc(self, cx, cy, d_in, d_out, v):
+    def arc(self, cx, cy, d_in, d_out, v, lead_out=0.0):
         """Smooth 90 degree turn through the cell centred at (cx, cy), entering
         in maze direction d_in and leaving in d_out: a quarter circle of
         TURN_RADIUS around the corner post, from the entry boundary to the
@@ -913,6 +990,12 @@ class Robot:
         arc ends when the mouse crosses the exit boundary - so an error in one
         turn is corrected rather than passed on to the next (the straight
         after it re-centres on the walls).
+
+        The wheels answer a new yaw rate ARC_LAG_S late: the mouse aims that
+        far ahead along the circle, so it does not lag behind the turn and
+        swing wide; with `lead_out` (m) it hands over to the next straight
+        that much before the exit boundary, because the turning carries on
+        for the same delay.
         """
         uix = DIR_UX[d_in]
         uiy = DIR_UY[d_in]
@@ -927,7 +1010,7 @@ class Robot:
         guard = 0
         while guard < 400:
             guard += 1
-            if (self.px - exit_x) * uox + (self.py - exit_y) * uoy >= 0.0:
+            if (self.px - exit_x) * uox + (self.py - exit_y) * uoy >= -lead_out:
                 break
             rx = self.px - ox
             ry = self.py - oy
@@ -937,8 +1020,14 @@ class Robot:
             lateral = -sign * (r - TURN_RADIUS)     # + when left of the path
             head_ofs = clamp(-K_LATERAL * lateral, -MAX_HEAD_OFS, MAX_HEAD_OFS)
             v_meas = max(0.05, (self.vl + self.vr) / 2.0)
-            w = sign * v_meas / TURN_RADIUS + K_HEADING * (tangent + head_ofs - self.heading)
+            rate = sign * v_meas / TURN_RADIUS
+            aim = tangent + rate * ARC_LAG_S        # where the tangent will be once the wheels respond
+            w = rate + K_HEADING * (aim + head_ofs - self.heading)
             self.tick(v, w)
+        # a curve is driven on odometry and gyro alone (no walls to check
+        # against), and the wheels scrub: the position is less certain after it
+        self.pos_unc = min(POS_UNC_MAX, self.pos_unc + ARC_POS_UNC)
+        self.arcs_since_fix += 1
 
     def turn_to(self, target):
         """Pivot on the spot to an absolute heading (rad).
@@ -952,7 +1041,9 @@ class Robot:
         w = 0.0
         elapsed = 0
         fwd0 = self.fwd
-        while elapsed < TURN_TIMEOUT_MS:
+        # time allowed: the fixed margin plus the angle at full turn rate
+        timeout = TURN_TIMEOUT_MS + int(1000.0 * abs(target - self.heading) / TURN_W_MAX)
+        while elapsed < timeout:
             # hold the centre on the spot: a sticky wheel that lags makes the
             # mouse roll while it pivots, so drive that roll back to zero
             v_hold = clamp(-PIVOT_HOLD_GAIN * (self.fwd - fwd0), -PIVOT_HOLD_VMAX, PIVOT_HOLD_VMAX)
@@ -1055,6 +1146,41 @@ class Robot:
         if abs(target - self.heading) > FACE_TOL:
             self.turn_to(target)
 
-    def pirouette(self):
-        """360 degree clockwise spin on the spot, ending on the same heading."""
-        self.turn_to(self.heading - TWO_PI)
+    def pirouette(self, extra_quarters=0):
+        """360 degree clockwise spin on the spot, plus `extra_quarters` more
+        clockwise quarter turns in the same motion (the turn towards the way
+        out, when that is clockwise anyway: one spin instead of spin, stop,
+        turn). Ends square to the maze."""
+        axis = round(self.heading / HALF_PI) * HALF_PI
+        self.turn_to(axis - TWO_PI - extra_quarters * HALF_PI)
+
+    def reverse(self, direction, dist, wall_along=None):
+        """Back up `dist` metres while still facing maze `direction` (out of a
+        dead end, instead of turning round). Holds the heading with the gyro;
+        the distance comes from odometry, checked at the end against the
+        dead-end wall the front sensor is still looking at (`wall_along`,
+        its position along the facing axis)."""
+        ux = DIR_UX[direction]
+        uy = DIR_UY[direction]
+        hold = self.nearest_heading(direction)
+        target = self.px * ux + self.py * uy - dist
+        v = 0.0
+        guard = 0
+        while guard < 1500:
+            guard += 1
+            remaining = (self.px * ux + self.py * uy) - target
+            coast = max(0.0, -(self.vl + self.vr) / 2.0) * COAST_TIME
+            if remaining <= coast:
+                break
+            v_allow = math.sqrt(2.0 * DECEL * max(0.0, remaining - coast))
+            v = min(v + ACCEL * self.dt, REVERSE_SPEED, max(v_allow, CREEP_SPEED))
+            w = clamp(K_HEADING * (hold - self.heading), -1.0, 1.0)
+            self.tick(-v, w)
+        self.brake()
+        self.stop(BRAKED_SETTLE_MS)
+        if wall_along is not None:
+            self.sample_still(3)
+            if self.tof_c < REVERSE_TOF_RANGE:
+                err = self._along_from_front(self.tof_c, wall_along) - (self.px * ux + self.py * uy)
+                if abs(err) < FRONT_POSE_WINDOW + self.pos_unc:
+                    self.along_track_fix(err, ux, uy, REVERSE_TOF_GAIN)
